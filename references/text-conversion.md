@@ -61,6 +61,37 @@ Spoken: 「二零二六年，预测净利润七十二点二亿，同比增长约
 Keep the header words in the spoken form — "按现价对应" carries the caveat the table
 implied in its column header.
 
+### 3b. Charts and images: read them, then narrate them
+
+An image reference (`![alt](path.png)`) is **not** decoration — in a research report the
+chart frequently carries the finding. Skipping it leaves the listener with the claim and
+none of the evidence.
+
+Process: open the image with the Read tool, extract the values, then write them out as
+sentences in the place the image appears. Do not say "there was a chart about routing."
+
+Worked examples, from a 4-chart report:
+
+| Chart | Instead of | Narrate |
+|---|---|---|
+| 7-bar horizontal, cost reduction | "a bar chart of cost savings" | each bar's label and value, in order, plus any caveat the chart itself prints |
+| 8-point scatter, quality vs cost | "a scatter plot" | each point's two coordinates, and name the cluster that carries the argument |
+| 5-bar comparison vs a baseline | "results improved" | each bar, then name which ones cross the baseline line — and how many didn't |
+| 3-column architecture diagram | "the diagram shows the layers" | the columns' contents in order, then the stack underneath it |
+
+Two things that made the difference:
+
+- **Caveats printed on the chart are content.** One bar chart said its sources used
+  different cost baselines and were not directly comparable. That sentence belongs in the
+  narration, not just the caption — it is the difference between a number and a
+  misleading number.
+- **The "how many didn't" framing.** A bar chart of five multi-agent scores against a
+  single-agent baseline is only interesting as "4 of 5 did not beat the baseline." Reading
+  the five values without that count throws away the entire point of the figure.
+
+A chart the Read tool cannot render (corrupt, exotic format) is worth announcing rather
+than silently dropping: "報告此處有一張圖，我看不到，請你回去看原文第 N 節。"
+
 ### 4. Acronyms: three different treatments
 
 Decide per term, don't apply one blanket rule.

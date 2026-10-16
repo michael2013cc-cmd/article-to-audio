@@ -53,6 +53,10 @@ been tested (only Mandarin, Simplified and Traditional, is verified).
    it reads out URLs, reads `+1.79%` as "plus one point seven nine percent", and recites
    tables cell by cell.
 
+   **If the article embeds images, open every one and narrate its contents.** A research
+   report's chart often carries the finding; the surrounding prose only states the claim.
+   Extract the values and write them as sentences where the image appeared.
+
 2. **Drop non-article content, and say what you dropped.** Agent process logs ("先读取
    数据插件的使用说明") and closing questions addressed to the assistant ("要不要我把这段
    并进清单档") are not article content. Removing them silently misrepresents the source;
@@ -101,15 +105,20 @@ been tested (only Mandarin, Simplified and Traditional, is verified).
   different name) and numeric boundaries shift between runs. Judge on digits, scores and
   the conclusion sentence; do not regenerate over a misspelled name. Re-run
   `--verify-only` to see whether a miss is stable before acting on it.
-- **STT returns 0 chars on a long file** — the endpoint silently gives up past roughly
-  3 minutes / 3 MB. The script chunks anything longer, so a 0-char result means the
-  chunking path is broken, not that the audio is. The transcript is saved to
-  `<jobdir>/transcript.txt` for grepping.
+- **STT returns 0 chars, or times out partway** — the endpoint is unreliable above a few
+  minutes and fails *silently or transiently*. Measured: 33 MB whole-file → 0 chars no
+  error; 300 s chunks → `UND_ERR_HEADERS_TIMEOUT`; 150 s chunks → clean. The script chunks
+  at 150 s, retries once, saves the transcript after every piece, and reports which pieces
+  failed instead of aborting. Re-run `--verify-only` to retry only those. Partial
+  transcripts are still worth checking — a key that is "missing" may simply sit in a
+  window you did not sample, so confirm where the number actually occurs before treating
+  it as a content error.
 - **ffprobe "Option not found" with empty stdout** — the script was called with
   `--show_entries`; ffprobe 5.1 needs the single-dash `-show_entries`. This surfaces as a
   confusing `float('')` far from the cause.
-- **TTS unavailable** — say so plainly and point at the article. Do not substitute a web
-  TTS site and hand the user a copy-paste chore.
+- **TTS or STT unavailable / network failing** — say so plainly and point at the script.
+  Do not substitute a web TTS site and hand the user a copy-paste chore. A 0-char STT pass
+  means "unverified", not "verified" — report it that way.
 
 ## Examples
 

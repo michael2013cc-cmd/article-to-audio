@@ -140,23 +140,37 @@ function merge(items, jobdir, out, gap) {
   run('ffmpeg', ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', con, '-c', 'copy', out]);
 }
 
-/** The STT endpoint returns an empty transcription on long input (observed:
- *  ok at 3 min / 2.8 MB, empty at 35 min / 32 MB). Chunk anything past STT_MAX
- *  seconds, transcribe each piece, and join. */
-const STT_MAX = 300;
+/** The STT endpoint is unreliable on long input, and the failures are silent or
+ *  transient — measured on a 37-minute file:
+ *    - 33 MB / 35 min whole-file  → 0 chars, no error
+ *    - 300 s chunks               → UND_ERR_HEADERS_TIMEOUT partway through
+ *    - 150 s chunks               → 15/15 succeeded
+ *  So: small chunks, one retry, incremental saves, and never abort the run because
+ *  a single piece failed — a lost 14th piece must not throw away the other 13. */
+const STT_MAX = 150;
 
-async function sttOnce(file) {
-  const { temp_url } = JSON.parse(run('mcode-tools', ['upload_temp_url', path.resolve(file)]));
-  const args = { audio_info: { url: temp_url, mime_type: 'audio/mpeg', prompt: '逐字转写，保留繁體中文' } };
-  const d = JSON.parse(run('mcode-tools', ['connector', 'call', STT, '--args', JSON.stringify(args)], { timeout: TTS_TIMEOUT }));
-  return d.transcription || '';
+async function sttOnce(file, attempt = 1) {
+  try {
+    const { temp_url } = JSON.parse(run('mcode-tools', ['upload_temp_url', path.resolve(file)], { timeout: 180_000 }));
+    const args = { audio_info: { url: temp_url, mime_type: 'audio/mpeg', prompt: '逐字转写，保留繁體中文' } };
+    const d = JSON.parse(run('mcode-tools', ['connector', 'call', STT, '--args', JSON.stringify(args)], { timeout: 240_000 }));
+    const t = d.transcription || '';
+    if (!t && attempt < 2) { console.log(`    (empty, retrying ${file})`); return sttOnce(file, attempt + 1); }
+    return t;
+  } catch (e) {
+    if (attempt < 2) { console.log(`    (${String(e.message).slice(0, 60)}, retrying)`); return sttOnce(file, attempt + 1); }
+    console.error(`    !! gave up on ${path.basename(file)}: ${String(e.message).slice(0, 80)}`);
+    return '';
+  }
 }
 
 async function transcribeFull(out, jobdir) {
   fs.mkdirSync(jobdir, { recursive: true });
   const total = duration(out);
+  const tfile = path.join(jobdir, 'transcript.txt');
   if (total <= STT_MAX) return sttOnce(out);
   const n = Math.ceil(total / STT_MAX);
+  const failed = [];
   let text = '';
   for (let i = 0; i < n; i++) {
     const piece = path.join(jobdir, `stt_${i}.mp3`);
@@ -164,9 +178,12 @@ async function transcribeFull(out, jobdir) {
       '-i', out, '-c', 'copy', piece]);
     const t = await sttOnce(piece);
     console.log(`    piece ${i + 1}/${n} (${((i + 1) * STT_MAX).toFixed(0)}s): ${t.length} chars`);
-    if (!t.length) { console.error(`  !! piece ${i + 1} came back empty`); continue; }
+    if (!t.length) failed.push(i + 1);
     text += t;
+    // Save after EVERY piece: a failure at the end must not discard the rest.
+    fs.writeFileSync(tfile, text);
   }
+  if (failed.length) console.error(`  !! ${failed.length}/${n} pieces failed: ${failed.join(', ')} — re-run --verify-only to retry just those`);
   return text;
 }
 
