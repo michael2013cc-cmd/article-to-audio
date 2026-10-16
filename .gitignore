@@ -1,0 +1,26 @@
+# 本项目的转写产物不入库
+.tts-narration/
+output/
+*.mp3
+!assets/*.mp3
+
+# 转写稿与分段（内容因文章而异，不该进仓库）
+segs*.json
+transcript.txt
+
+# 密钥 —— 任何形态都不许提交
+.env
+.env.*
+*.pem
+*.key
+*token*
+*secret*
+credentials.json
+
+# 音频/视频中间产物
+parts/
+stt_*.mp3
+concat.txt
+
+node_modules/
+.DS_Store
