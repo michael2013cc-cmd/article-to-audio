@@ -41,6 +41,8 @@ feedback says the current voice is wrong:
 
 Full catalog: `connector__matrix__get_voice_list` — 332 voices across Mandarin, Cantonese,
 English, Japanese, Korean, Spanish, French, German and more.
+`references/voices.md` has the fuller per-scenario table plus what has and has not actually
+been tested (only Mandarin, Simplified and Traditional, is verified).
 
 ## Procedure
 
