@@ -44,6 +44,130 @@ English, Japanese, Korean, Spanish, French, German and more.
 `references/voices.md` has the fuller per-scenario table plus what has and has not actually
 been tested (only Mandarin, Simplified and Traditional, is verified).
 
+## Verification: how the STT pass actually behaves
+
+Measured on real output, not assumed. These cost real debugging time — treat them
+as facts, not guesses.
+
+**Number format is bidirectional.** The STT does not normalise numbers one way:
+
+| Script says | Transcript gets |
+|---|---|
+| `二零二六年` (Chinese) | `2026年` (Arabic) |
+| `共 18 篇` (Arabic) | `共十八篇` (Chinese) |
+| `百分之八十六` | `86` |
+| `3.1 比 1` | `3.1` |
+| `三万八千小时` | `3萬8千小時` (mixed Arabic + Chinese) |
+
+So **every numeric key must accept both forms.** The script writing a figure in
+Arabic does *not* guarantee the transcript will be Arabic — a key set built on
+that assumption misses for the wrong reason. `numericForms()` generates the
+Arabic, Simplified-Chinese and Traditional-Chinese renderings of a value, and the
+matcher also normalises the transcript before comparing, which covers the mixed
+forms without enumerating them by hand.
+
+**Ranking must not prefer "the script wrote it in Arabic".** That was the earlier
+assumption and it was wrong. What makes a key worth having is that the figure is
+distinctive (has a unit, a decimal point, or is simply large) — not which script
+it came from.
+
+**STT also drops and mangles digits.** `11.3 小时` came back as `1.3小時`. That
+is a genuine transcription miss and *should* be reported — a key that misses
+after normalisation is a real signal, not noise. The `--check-txt` output
+locates the region using the script context the key was derived from, so you can
+see what was actually written.
+
+**Strip markdown before the TTS sees it.** The `**` bold markers are never
+spoken, but they are not harmless. The same segment synthesized five times:
+
+- with `**` → **5/5 failed**. The sentence stopped early, `42.5 EF` was never
+  spoken, and the engine appended hallucinated garbage: *"Don't feel
+  uncomfortable."*, *"dofus.com/fm"*, *"Trillium, comma, family."*, *"Trophy
+  real cool MF."*
+- without → **5/5 correct**, including `42.5 EF`.
+
+`narrate.mjs` strips markdown from the spoken text automatically
+(`scripts/md.mjs`); the written script keeps the markers. If you call the TTS
+connector directly, strip it yourself.
+
+**Two different failure modes, and the difference tells you which one you hit.**
+Re-transcribe the same audio with different chunk boundaries and compare:
+
+| | Pass 1 | Pass 2 | Diagnosis |
+|---|---|---|---|
+| STT hallucination | wrong | **right** | the audio is fine, the transcript lied |
+| TTS corruption | **wrong** | **same wrong** | the audio itself is damaged — re-render it |
+
+Consistent-wrong across two passes means the damage is in the audio. A
+hallucinated tail shows up as stray English, a URL, or a plausible-sounding
+phrase that is not in the script at all — *"Trillium, comma, family."* was
+never written by anyone.
+
+**The TTS makes intermittent errors on short numeric phrases.** Same text, same
+voice, same speed — synthesized five times, two of them wrong: `各投 20 億美元`
+came out as `2 億` or `21 億`. That is a factual error the listener hears, and
+re-writing the text does not help — only re-synthesizing does. It hit the
+NVIDIA→Lumentum/Coherent investment figure ($2B each) in Episode 5.
+
+Fix with `--redo <n>`: re-synthesize one segment, rebuild the merge, done.
+`node scripts/narrate.mjs --segments segs.json --out out.mp3 --redo 41`
+
+**The STT is not deterministic, and on short numbers it varies wildly.** One
+fixed, *correct* audio file, transcribed five times, gave: `20美元`, `2.1億美元`,
+`20億美元` ✓, `21億美元`, `20億美元` ✓. Three different numbers from one
+recording. So:
+
+- **A single transcript cannot tell you whether the audio is wrong.**
+- `probe-audio.mjs` is the arbiter: transcribe the same window N times and look
+  at the spread. Some readings correct → the audio is fine, the STT is noisy.
+  Every reading the same wrong value → the audio is damaged, use `--redo`.
+  ```bash
+  node scripts/probe-audio.mjs --file out.mp3 --start 479 --dur 14 \
+    --times 6 --expect "20億"
+  ```
+- `--recheck` is the cheap version of the same idea: it re-transcribes with
+  shifted chunk boundaries and matches against the **union**. Use
+  `--recheck-passes 3` (not the default 2) — a two-sample union can miss a
+  figure that is really there, because the STT only produced the right reading
+  in 4 of 6 passes.
+
+**STT can hallucinate a whole passage.** This is the finding that changed the
+verification design. On a real 13-minute segment, the first transcript rendered
+a specification as `GLM-4-9B, 14.3B, 40 layers, 64 experts, 2024-06-05,
+1000萬美元, zhipu.ai` — every number replaced with a plausible wrong one. A
+second pass over **the same audio**, cut at different boundaries, produced
+`GLM-5.3, 744B, 78 layers, 256 experts, 2026-08-28, 1億美元, z.ai` — correct
+in every particular. The audio was never wrong; the transcript was.
+
+Consequences:
+
+- **A missing key does not mean the audio is missing the content.** It may mean
+  the STT invented something else. Never report a miss as a content error
+  without a second opinion.
+- `--recheck` settles it: it re-transcribes the whole file with shifted chunk
+  boundaries (97 s chunks offset by 31 s, so no boundary lines up with the
+  standard 150 s pass) and matches the key against the **union** of both
+  passes. Present in either → the audio has it. Absent from both → check
+  whether both passes agree on the same wrong value (TTS damage → re-render) or
+  disagree (STT noise → the audio is fine).
+- Corollary: a key that *hits* is trustworthy, but a transcript as a whole is
+  not — quote the numbers, not the prose, when reporting.
+
+**STT mangles proper nouns and jargon too**: `长时程` → `常識成`,
+`复利` → `福利價值`, `AlphaEvolve` → `AlphaEvlove`, `字节 Seed` → `字節C`.
+Judge on digits, scores and the conclusion sentence; do not regenerate the whole
+audio over a misspelled name. But do check that a mangled term is still
+*recognisable* — `常識成自主性` is a word salad that a listener will stumble on,
+and that is worth fixing in the script by writing the term differently.
+
+**Do not trust node ids for ordering.** The `success_items` come back in
+arbitrary order and their node ids are assigned by asset-creation time, not
+request time — sorting by id gives a chars-per-second spread of 50–120x, i.e.
+garbage. Only the `output_file` name is trustworthy. (`recover-parts.mjs` can
+rebuild a job's segment map afterwards, but it can only get the order right by
+matching lengths, which is good enough to be uncertain — do not cut audio on
+its word.)
+
 ## Procedure
 
 1. **Rewrite the text for the ear before touching the TTS engine.** This step decides
@@ -67,23 +191,68 @@ been tested (only Mandarin, Simplified and Traditional, is verified).
    segment usually works; a long paragraph may need two. A segment that ends mid-clause
    produces a rushed-sounding gap once merged.
 
-4. **Write the segments to JSON** — `{"segments": ["...", "..."]}` — and run:
+4. **Write the segments to JSON** — `{"segments": ["...", "..."]}` — and lint the number
+   rendering before spending any API budget:
+
+   ```bash
+   node scripts/narrate.mjs --segments segs.json --lint-numbers
+   ```
+
+   This flags numbers written in Chinese that STT will mangle — Chinese decimals
+   (`二点五` → the point is often lost) and Chinese big numbers (`三百万亿` → the magnitude
+   is ambiguous, and `三百万亿` literally parses as 3×10¹⁴ while the speaker means 3×10¹¹).
+   **Fix them in the script**: write `2.5`, `3,000億` or `300T`. A Chinese-written figure is
+   both harder to hear correctly and harder to verify later.
+
+5. **Derive the verification keys from the script — never hand-write them.** This is a hard
+   rule, not a preference. A hand-written key that was never spoken can never appear in the
+   transcript, so it reports as a "miss" and costs a full TTS+STT cycle to chase. It happened
+   three times in a row on one episode (`104`, `158`, `69` — none of them were in the script).
+
+   ```bash
+   node scripts/extract-keys.mjs --segments segs.json --top 30   # inspect candidates
+   node scripts/narrate.mjs --segments segs.json --out output/<name>.mp3 \
+     --auto-verify 25 --keep-script output/<name>.md              # derive + verify
+   ```
+
+   `--auto-verify N` picks the top N figures straight from the script: literal-Arabic
+   figures first (STT echoes those almost verbatim), then Chinese-numeral figures converted
+   to Arabic, spread across segments so one dense paragraph cannot eat the whole budget.
+   Each converted figure carries a set of accepted renderings, so `十亿美元` is accepted as
+   `1000000000`, `10億` or `100000萬` — whichever the STT happened to produce.
+
+   If you do pass `--verify` by hand, the script **pre-flight-checks it against the script
+   and exits 3 before making any API call** if a key is not actually there. That is the
+   safety net; the auto-derivation is the primary path.
+
+   The script handles batching (>10 segments means multiple calls), re-sorting the
+   response, downloading, the inter-segment silence, and the merge.
+
+6. **After a run, iterate on keys for free.** The transcript is saved at
+   `.tts-narration/<job>/transcript.txt`. To try a different key set without re-running
+   anything:
 
    ```bash
    node scripts/narrate.mjs --segments segs.json --out output/<name>.mp3 \
-     --verify "<key figure>,<key figure>,..." --keep-script output/<name>.md
+     --auto-verify 25 --check-txt .tts-narration/<job>/transcript.txt
    ```
 
-   The script handles batching (>10 segments means multiple calls), re-sorting the
-   response, downloading, the inter-segment silence, and the merge. Give `--verify` the
-   article's load-bearing numbers — they are what prove the audio says the right thing.
+   `--check-txt` makes no API calls at all. `--verify-only <mp3>` re-transcribes and
+   re-checks against the audio, which does cost a STT pass.
 
-5. **Write `--verify` keys in Arabic digits, not Chinese numerals.** The STT pass
-   normalizes spoken numbers back to digits, so `"393.5"` matches and `"三百九十三点五"`
-   never will. Matching zero keys usually means the wrong keys, not broken audio.
+   If a key misses, run `--recheck` before concluding anything about the audio —
+   it re-transcribes with shifted boundaries and tells you whether the key is
+   really absent or the first transcript was wrong:
 
-6. **Report the result with the numbers that matter**: total duration, segment count, and
-   the verification result. Mention anything dropped in step 2.
+   ```bash
+   node scripts/narrate.mjs --segments segs.json --out output/<name>.mp3 \
+     --auto-verify 25 --recheck
+   ```
+
+7. **Report the result with the numbers that matter**: total duration, segment count, and
+   the verification result. Mention anything dropped in step 2. If a key misses, say
+   plainly whether the audio is wrong or the transcript was — run `--recheck` and let
+   it decide. "Unverified" is not the same as "verified".
 
 ## Output contract
 
@@ -103,8 +272,21 @@ been tested (only Mandarin, Simplified and Traditional, is verified).
 - **STT reports a missing key** — distinguish a real problem from STT noise first. STT
   routinely mangles Latin proper nouns (`vibe coding` → `web coding`, `Leporini` → a
   different name) and numeric boundaries shift between runs. Judge on digits, scores and
-  the conclusion sentence; do not regenerate over a misspelled name. Re-run
-  `--verify-only` to see whether a miss is stable before acting on it.
+  the conclusion sentence; do not regenerate over a misspelled name. Check the saved
+  transcript first (`--check-txt`, no API cost) to see what STT actually wrote for that
+  stretch; re-run `--verify-only` only if you need to re-transcribe the audio itself.
+  A key that is "missing" may sit in a window that was not sampled.
+- **A key is missing from the script itself** — the pre-flight gate exits 3 with the
+  offending keys named. Do not "fix" it by editing the key to something plausible; the
+  figure is either not in the narration (add it) or not worth verifying (drop it).
+- **A key misses after normalisation** — do NOT assume the audio is wrong. Run
+  `--recheck --recheck-passes 3`. The STT hallucinates whole passages AND varies
+  wildly on short numbers; a second or third pass with different chunk
+  boundaries usually contradicts the first. If the union still misses, use
+  `probe-audio.mjs` on that stretch: some correct readings → the audio is fine;
+  every reading identically wrong → re-render that segment with `--redo <n>`.
+  A wrong *number* in the audio is a factual error, not a cosmetic one —
+  fix it before shipping.
 - **STT returns 0 chars, or times out partway** — the endpoint is unreliable above a few
   minutes and fails *silently or transiently*. Measured: 33 MB whole-file → 0 chars no
   error; 300 s chunks → `UND_ERR_HEADERS_TIMEOUT`; 150 s chunks → clean. The script chunks
@@ -130,3 +312,17 @@ figures confirmed present by a transcribe-back pass.
 Input: 「把上面这篇念给我听」 with no article in the current turn. Look back in the
 conversation first — if a prior article is unambiguous, use it; if several are candidates,
 ask which one rather than picking.
+
+## 并发保护（必须遵守）
+
+任务目录 `.tts-narration/<输出文件名>/` 是**按输出文件名唯一定位**的，不是按运行定位。
+所以同一个工作目录里如果有两个进程同时跑（另一个 agent、另一个终端、或你自己忘了上一条还在跑），
+它们会互相覆盖 `transcript.txt` 和 `parts.json`，导致**已完成的校验结果被静默替换**。
+
+`narrate.mjs` 现在会在任务目录里写 `.lock`（PID）。如果该 PID 还活着，新进程会**直接退出并报退出码 5**，
+不会开始任何 API 调用。看到这个提示就换个 `--out` 文件名，或者等那个进程结束。
+
+> 实测教训：平台的自动化评测 agent 会在同一个 `/workspace` 里用同一套技能跑同一个任务。
+> 它的一次 `--verify-only` 覆盖了我已完成的 `transcript.txt`，
+> 日志里出现两套互相矛盾的校验结果（25/25 与 20/25 交错）。
+> 音频文件本身没坏（重验确认），但如果当时没察觉就会误判成「音频损坏」。

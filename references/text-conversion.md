@@ -44,6 +44,26 @@ For a source that genuinely adds information, offer it as a spoken footer at the
 A leading `+` reads as "plus" and a bare `%` string gets mangled. Always attach the
 direction to the number as a word.
 
+**But write the load-bearing figures in Arabic digits, not Chinese numerals.** The table
+above is about how numbers *sound*; this is about how they are *written* in the script, and
+it matters for two reasons:
+
+| Written as | Problem | Write instead |
+|---|---|---|
+| `二点五倍` | STT often loses the decimal point → the figure verifies as `2.5` only by luck | `2.5 倍` |
+| `三百万亿` | Magnitude is ambiguous — it literally parses as 3×10¹⁴, but the speaker means 3×10¹¹ (三千億) | `3000 億` or `300T` |
+| `万亿级` | Same class of problem | `10¹² 級` |
+| `五百八十六点四七` | Long Chinese numerals drift more the longer they are | `586.47` |
+
+The STT pass converts spoken numbers back to digits, so an Arabic figure in the script is
+both **easier to hear correctly** and **easy to verify afterwards**. A Chinese-written
+figure is neither.
+
+Run `node scripts/narrate.mjs --segments segs.json --lint-numbers` to list every
+Chinese-written figure in a script. It names the segment, the exact run, and why it is
+risky — including the ambiguous-magnitude cases where it refuses to suggest a value
+because the parser cannot know which reading you meant.
+
 ### 3. Tables become sentences
 
 The single highest-impact rule. A table read aloud is a catechism.
