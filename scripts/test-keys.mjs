@@ -102,6 +102,16 @@ eq('1,048,576 作为一个键', extractCandidates(['上下文 1,048,576 token'])
 eq('键接受去逗号形式', extractCandidates(['上下文 1,048,576 token'])
    .find(c => c.key === '1,048,576')?.alts.includes('1048576'), true);
 
+console.log('\n── 千分位后接小数是一个数（7,065.6 不是 7,065）──');
+eq('7,065.6 作为一个键', extractCandidates(['新台币 7,065.6 亿元'])
+   .map(c => c.key).includes('7,065.6'), true);
+eq('值是 7065.6', extractCandidates(['新台币 7,065.6 亿元'])
+   .find(c => c.key === '7,065.6')?.value, 7065.6);
+eq('不再退化成 7,065', extractCandidates(['新台币 7,065.6 亿元'])
+   .map(c => c.key).includes('7,065'), false);
+eq('普通小数不受影响', extractCandidates(['毛利率 67.7%'])
+   .map(c => c.key).includes('67.7'), true);
+
 console.log('\n── 键必须双向可匹配（脚本阿拉伯 ↔ 字幕中文）──');
 const t = '第三篇，共十八篇，進度機制換引擎。';
 const k18 = { key: '18', alts: numericForms(18) };

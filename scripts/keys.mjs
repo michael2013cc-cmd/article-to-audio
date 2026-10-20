@@ -373,11 +373,18 @@ export function extractCandidates(segments) {
       // ("3萬8千"), which the Chinese scanner handles as one value.
       if (CN_NUM_CHARS.has(chars[i + 1])) { continue; }
       let j = i;
-      while (j < chars.length && (isDigit(chars[j]) || chars[j] === '.')) j++;
+      while (j < chars.length && isDigit(chars[j])) j++;
       // Thousands separators: "1,048,576" is one number, not three.
       while (j < chars.length && chars[j] === ',' && isDigit(chars[j + 1])
              && isDigit(chars[j + 2]) && isDigit(chars[j + 3])) {
         j += 4;
+        while (j < chars.length && isDigit(chars[j])) j++;
+      }
+      // A decimal part may follow the comma-grouped integer: "7,065.6" is ONE
+      // number. Without this the scanner stopped at "7,065" and dropped ".6",
+      // so the key could never be matched by a transcript that said 7,065.6.
+      if (j < chars.length && chars[j] === '.' && isDigit(chars[j + 1])) {
+        j++;
         while (j < chars.length && isDigit(chars[j])) j++;
       }
       let k = j;

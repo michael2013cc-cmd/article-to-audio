@@ -42,7 +42,8 @@ import { stripMarkdown } from './md.mjs';
 
 const TOOL = 'connector__matrix__batch_text_to_audio';
 const STT = 'connector__matrix__listen_audio';
-const BATCH_LIMIT = 10;   // hard server limit per call
+const BATCH_LIMIT = 6;    // server hard limit is 10, but bursts of 10 trip a 429 rate limit
+const BATCH_PAUSE = 2000; // ms between batches
 const TTS_TIMEOUT = 600_000;
 
 function parseArgs(argv) {
@@ -57,6 +58,7 @@ function parseArgs(argv) {
     if (k === 'recheck-passes') { a.recheckPasses = Number(argv[++i] || 2); continue; }
     if (k === 'redo') { a.redo = Number(argv[++i]); continue; }
     if (k === 'verify') { a.verify = (argv[++i] || '').split(',').map(s => s.trim()).filter(Boolean); continue; }
+    if (k === 'verify-file') { a.verifyFile = argv[++i]; continue; }
     if (k === 'auto-verify') { a.autoVerify = Number(argv[++i] || 25); continue; }
     if (k === 'list-keys') {
       const nxt = argv[i + 1];
@@ -106,29 +108,117 @@ function loadSpoken(file) {
   return { segs: raw, spoken: raw.map(stripMarkdown) };
 }
 
-async function synthesize(segs, opts, jobdir) {
+/** One connector call for a chunk of parts. Returns {ok:[], failed:[indices]}. */
+function callBatch(chunk, jobdir, tag) {
+  const f = path.join(jobdir, `args_${tag}.json`);
+  fs.writeFileSync(f, JSON.stringify({ requests: chunk }));
+  const d = JSON.parse(run('mcode-tools', ['connector', 'call', TOOL, '--args-file', f], { timeout: TTS_TIMEOUT }));
+  if (d.code !== 0) throw new Error(`${tag}: code=${d.code} ${d.message}`);
+  return d;
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Resume is CONTENT-ADDRESSED, not index-addressed.
+ *
+ * A cache keyed on "part_034" breaks the moment the script is edited: fixing
+ * one number can re-split a paragraph and shift every later index. Keying on
+ * the spoken TEXT means an edited paragraph re-renders and every untouched
+ * paragraph keeps its audio, no matter how the indices moved.
+ *
+ * `resume` is [{ text, node_id, file_name }].
+ */
+async function synthesize(segs, opts, jobdir, resume = [], cachePath = null) {
   fs.mkdirSync(jobdir, { recursive: true });
+  const save = () => { if (cachePath) fs.writeFileSync(cachePath, JSON.stringify(items.map(i => ({ ...i, text: i.text })), null, 2)); };
   const parts = segs.map((text, i) => ({
     text,
     voice_id: opts.voice,
     speed: opts.speed,
     emotion: opts.emotion,
-    output_file: `part_${String(i + 1).padStart(2, '0')}.mp3`,
+    output_file: `part_${String(i + 1).padStart(3, '0')}.mp3`,
   }));
   const items = [];
-  for (let s = 0; s < parts.length; s += BATCH_LIMIT) {
-    const chunk = parts.slice(s, s + BATCH_LIMIT);
-    const f = path.join(jobdir, `args_${String(s / BATCH_LIMIT + 1).padStart(2, '0')}.json`);
-    fs.writeFileSync(f, JSON.stringify({ requests: chunk }));
-    const d = JSON.parse(run('mcode-tools', ['connector', 'call', TOOL, '--args-file', f], { timeout: TTS_TIMEOUT }));
-    if (d.code !== 0) throw new Error(`batch ${s / BATCH_LIMIT + 1}: code=${d.code} ${d.message}`);
-    if (d.failed_items?.length) console.error(`  !! failed_items: ${JSON.stringify(d.failed_items)}`);
-    console.log(`  batch ${s / BATCH_LIMIT + 1}: asked ${chunk.length}, got ${d.success_items.length}`);
-    items.push(...d.success_items);
+  const have = new Set();
+  // Pool of previously synthesized parts, keyed by their spoken text.
+  const pool = new Map();
+  for (const it of resume) {
+    if (!it.text) continue;
+    if (!pool.has(it.text)) pool.set(it.text, []);
+    pool.get(it.text).push(it);
   }
+  // Claim one cached part per matching segment (a text used twice needs two).
+  for (const p of parts) {
+    const q = pool.get(p.text);
+    if (!q || !q.length) continue;
+    const it = q.shift();
+    if (have.has(it.file_name)) continue;
+    items.push({ ...it, text: p.text });
+    have.add(it.file_name);
+  }
+  if (items.length) console.log(`  resuming: ${items.length} part(s) reused by content (${resume.length} cached)`);
+
+  // Pass 1: full batches. Skip the ones we already have.
+  for (let s = 0; s < parts.length; s += BATCH_LIMIT) {
+    const chunkAll = parts.slice(s, s + BATCH_LIMIT);
+    const chunk = chunkAll.filter(p => !have.has(p.output_file));
+    if (!chunk.length) continue;
+    const d = callBatch(chunk, jobdir, String(s / BATCH_LIMIT + 1).padStart(2, '0'));
+    const failed = d.failed_items?.length || 0;
+    if (failed) console.error(`  !! ${failed} failed in batch ${s / BATCH_LIMIT + 1}: ${d.failed_items[0].error_msg}`);
+    console.log(`  batch ${s / BATCH_LIMIT + 1}: asked ${chunk.length}, got ${d.success_items.length}`);
+    for (let k = 0; k < d.success_items.length; k++) {
+      const it = d.success_items[k];
+      items.push({ ...it, text: chunk[k] ? chunk[k].text : '' });
+      have.add(it.file_name);
+    }
+    save();
+    // The upstream TTS is RATE-LIMITED (err_code 429) on bursts. Pacing the
+    // batches is cheaper than a retry storm.
+    await sleep(failed ? 4000 : BATCH_PAUSE);
+  }
+
+  // Pass 2: re-request ONLY the parts that are missing, in small batches with
+  // a growing delay. The upstream message says: "retry the SAME request after
+  // a brief delay (do not change the prompt)".
+  let missing = parts.filter(p => !have.has(p.output_file));
+  let attempt = 0;
+  while (missing.length && attempt < 6) {
+    attempt++;
+    const size = Math.max(1, Math.min(4, 10 - attempt * 2));
+    console.log(`  retry pass ${attempt}: ${missing.length} missing, batches of ${size}`);
+    let progressed = false;
+    for (let s = 0; s < missing.length; s += size) {
+      const chunk = missing.slice(s, s + size);
+      const d = callBatch(chunk, jobdir, `retry${attempt}_${String(s / size + 1).padStart(2, '0')}`);
+      for (let k = 0; k < d.success_items.length; k++) {
+        const it = d.success_items[k];
+        items.push({ ...it, text: chunk[k] ? chunk[k].text : '' });
+        have.add(it.file_name);
+        progressed = true;
+      }
+      save();
+      if (d.failed_items?.length) {
+        console.error(`  !! still failing: ${d.failed_items[0].error_msg}`);
+      }
+      await sleep(3000 * attempt);
+    }
+    const before = missing.length;
+    missing = parts.filter(p => !have.has(p.output_file));
+    if (!progressed && missing.length === before) await sleep(15000);
+  }
+  if (missing.length) {
+    throw new Error(`part synthesis failed for ${missing.length} part(s) after retries: ${missing.map(m => m.output_file).join(', ')}`);
+  }
+
   // GOTCHA: success_items comes back in arbitrary order. Only the output_file
   // name is trustworthy. Sorting by it is not optional.
-  items.sort((x, y) => x.file_name.localeCompare(y.file_name));
+  //
+  // The sort MUST be numeric-aware. With 2-digit padding "part_11" < "part_100"
+  // lexicographically, so a 100+ segment job silently mis-orders every part
+  // from #11 onward. `numeric: true` compares the digit runs as numbers.
+  items.sort((x, y) => x.file_name.localeCompare(y.file_name, undefined, { numeric: true }));
   const got = items.map(i => i.file_name);
   const want = parts.map(p => p.output_file);
   if (got.join() !== want.join()) throw new Error(`part mismatch\n  want ${want}\n  got  ${got}`);
@@ -394,6 +484,20 @@ function gateKeys(keys, segs) {
 /** Build the verification key set: hand-written keys plus/minus auto-derived. */
 function buildKeys(segs, a) {
   let keys = (a.verify || []).map(s => ({ key: s, alts: [s] }));
+  if (a.verifyFile) {
+    // A key file carries the full alt set, so "45,000" is also accepted as
+    // "45000" and "四万五千" — the STT does not preserve the separator.
+    const file = JSON.parse(fs.readFileSync(a.verifyFile, 'utf8'));
+    const list = Array.isArray(file) ? file : (file.keys || []);
+    for (const k of list) {
+      const key = typeof k === 'object' ? String(k.key) : String(k);
+      const alts = (typeof k === 'object' && Array.isArray(k.alts) && k.alts.length) ? k.alts : [key];
+      if (!keys.some(x => x.key === key)) {
+        keys.push({ key, alts, context: typeof k === 'object' ? k.context : undefined, segment: typeof k === 'object' ? k.segment : undefined });
+      }
+    }
+    console.log(`verify-file: ${list.length} keys loaded from ${a.verifyFile}`);
+  }
   if (a.autoVerify && segs) {
     const picked = rankCandidates(extractCandidates(segs), a.autoVerify);
     for (const c of picked) {
@@ -568,7 +672,21 @@ const chars = spoken.reduce((n, s) => n + s.length, 0);
 console.log(`segments: ${segs.length}  chars: ${chars}  est min: ${(chars / 260).toFixed(1)}`);
 
 console.log('synthesizing...');
-const items = await synthesize(spoken, a, jobdir);
+// Cache the synthesis result. A failure AFTER this point (a bad sort, a failed
+// download, a merge problem) must not cost another 11 TTS batches.
+const itemsCache = path.join(jobdir, 'items.json');
+let items = null;
+if (fs.existsSync(itemsCache)) {
+  try {
+    const cached = JSON.parse(fs.readFileSync(itemsCache, 'utf8'));
+    console.log(`  cache: ${cached.length} part(s) on disk`);
+    items = await synthesize(spoken, a, jobdir, cached, itemsCache);
+  } catch (e) { console.error(`  cache unreadable, re-synthesizing: ${e.message}`); }
+}
+if (!items) {
+  items = await synthesize(spoken, a, jobdir, [], itemsCache);
+}
+fs.writeFileSync(itemsCache, JSON.stringify(items.map(i => ({ ...i })), null, 2));
 console.log('downloading...');
 download(items, jobdir);
 checkRatio(items, spoken, jobdir, a.gap);

@@ -191,6 +191,22 @@ its word.)
    segment usually works; a long paragraph may need two. A segment that ends mid-clause
    produces a rushed-sounding gap once merged.
 
+   Use the splitter, do not hand-write the segment list:
+
+   ```bash
+   node scripts/md2segs.mjs --md output/ep08a.md --out chip-research/ep08a_segs.json --dry-run
+   node scripts/md2segs.mjs --md output/ep08a.md --out chip-research/ep08a_segs.json
+   ```
+
+   It caps segments at ~120 characters, cuts at a sentence terminator, and folds
+   away a segment that would be nothing but markdown markers (a split that lands
+   right before a closing `**` produces a segment that speaks as an EMPTY audio
+   part — the merge then carries a silent gap).
+
+   **Why 120 and not 300:** a 235-character segment dropped BOTH "MI-455X" and
+   "Lisa Su" in the same rendering; split into 117 + 120 the recovery rate went
+   from 0/5 to 4/5–6/6. Long segments make the TTS mangle proper nouns.
+
 4. **Write the segments to JSON** — `{"segments": ["...", "..."]}` — and lint the number
    rendering before spending any API budget:
 
@@ -220,6 +236,23 @@ its word.)
    to Arabic, spread across segments so one dense paragraph cannot eat the whole budget.
    Each converted figure carries a set of accepted renderings, so `十亿美元` is accepted as
    `1000000000`, `10億` or `100000萬` — whichever the STT happened to produce.
+
+   **The auto ranker is not the whole answer.** It scores by distinctiveness and happily
+   returns `67`, `66`, `55` — round two-digit percentages that prove little — while the
+   headline figures (Q2 revenue, the demand curve, the customer allocation) sit below the
+   cut. Combine the two:
+
+   ```bash
+   node scripts/pick-keys.mjs --segments segs.json --out keys.json --auto 26 \
+     --values 402,7065.6,2694,1222
+   node scripts/narrate.mjs --segments segs.json --out output/ep08a.mp3 \
+     --verify-file keys.json --keep-script output/ep08a.md
+   ```
+
+   `--verify-file` carries the full alt set per key, so `45,000` is also accepted as
+   `45000` and `四万五千` — the STT does not preserve the separator. A value that is not
+   in the script is reported and skipped; the pre-flight gate still blocks any key that
+   the script does not contain.
 
    If you do pass `--verify` by hand, the script **pre-flight-checks it against the script
    and exits 3 before making any API call** if a key is not actually there. That is the
@@ -263,6 +296,58 @@ its word.)
 - Delivered via `<deliver-assets><media src="..." /></deliver-assets>`, mp3 first.
 - A short note on what was changed for the ear and what verification passed.
 
+## Offline audits — run these before spending API budget
+
+A transcript round-trip can only tell you whether a number SURVIVED synthesis. It cannot
+tell you whether the number was ever right. These two audits cost nothing:
+
+```bash
+# Does every number in the script trace back to the source? And which source
+# numbers never made it into the script?
+node scripts/audit-numbers.mjs --script output/ep08a.md --source chip-research/B3-*.md
+
+# Is every synthesized segment the right length? A truncated segment has the same
+# character count but less audio, so its ch/s ratio goes UP.
+node scripts/audit-segments.mjs --jobdir .tts-narration/ep08a-upstream --segments segs.json
+```
+
+`audit-numbers.mjs` caught a **10× error** that the STT pass would have happily
+transcribed back: the source said `$220 億` (22 billion) and the script said `22 億`
+(2.2 billion). The STT verified what was written; the script was wrong.
+
+`audit-segments.mjs` has two modes. `--jobdir` measures each part file directly and is
+exact. `--mp3` falls back to silence detection on a merged file, which is weaker — the
+TTS inserts its own pauses inside a segment, so silence does not mean boundary. The
+silence regex must pair `silence_start` and `silence_end` across LINES: ffmpeg prints
+them separately, and a one-line regex matches nothing and reports "0 段静音" while
+quietly producing a garbage per-segment table.
+
+## Interrupted runs — resume without re-spending
+
+The synthesis result is cached in `.tts-narration/<job>/items.json`, and the resume is
+**content-addressed**: each cached part records the TEXT it was synthesized from, so
+editing one paragraph re-renders that paragraph and keeps the audio of every untouched
+one — even when the edit re-splits a paragraph and shifts every later index.
+
+```bash
+node scripts/migrate-items-cache.mjs --jobdir .tts-narration/ep08a-upstream  # legacy cache
+node scripts/narrate.mjs --segments segs.json --out out.mp3 --verify-file keys.json
+```
+
+To see what a resume would cost before running it, compare the cached texts with the
+current segments. 87 of 108 segments reused meant 21 TTS calls instead of 108.
+
+**The upstream TTS rate-limits bursts.** Measured: batches of 10 gave 4 failures in
+batch 5 and up to 7 in batch 9, all `err_code 429`. The client now sends batches of 6
+with a 2 s pause, and re-requests only the missing parts in small batches with a growing
+delay — the upstream message says "retry the SAME request after a brief delay (do not
+change the prompt)".
+
+**Sort the parts NUMERICALLY.** `success_items` comes back in arbitrary order and only
+the `output_file` name is trustworthy, but `localeCompare` without `{numeric: true}`
+sorts `part_11` BEFORE `part_100` — a 100+ segment job silently mis-orders every part
+from #11 onward. The part names are padded to three digits, and the sort is numeric.
+
 ## Failure handling
 
 - **`failed_items` non-empty** — the script prints them. Re-run only the missing indices;
@@ -301,6 +386,12 @@ its word.)
 - **TTS or STT unavailable / network failing** — say so plainly and point at the script.
   Do not substitute a web TTS site and hand the user a copy-paste chore. A 0-char STT pass
   means "unverified", not "verified" — report it that way.
+- **HTTP 402 "the user's plan balance has run out"** — this is a BILLING limit on the
+  user's own plan, not a rate limit and not a transient fault. Retrying does not help.
+  Stop calling the TTS/STT connectors, download whatever parts were already synthesized
+  (asset node ids expire — pull them to the workspace), and tell the user to top up.
+  Everything else can still be finished offline: write the script, run `audit-numbers.mjs`,
+  prepare the segment and key files, and leave a resume command in the playlist.
 
 ## Examples
 
