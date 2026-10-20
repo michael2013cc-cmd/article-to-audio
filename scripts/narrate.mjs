@@ -149,13 +149,20 @@ async function synthesize(segs, opts, jobdir, resume = [], cachePath = null) {
     pool.get(it.text).push(it);
   }
   // Claim one cached part per matching segment (a text used twice needs two).
+  //
+  // CRITICAL: the claimed part must be RENAMED to the current segment's
+  // output_file. A cached part carries the file_name it had in the earlier
+  // run, and that name encodes the OLD index. Keeping it means the sort by
+  // file_name no longer matches the script order, and the merge silently
+  // shifts a block of segments by one — every audio file is fine and the
+  // transcript is readable, but the wrong sentence follows the right one.
+  // The name is only a label; the audio is the node_id.
   for (const p of parts) {
     const q = pool.get(p.text);
     if (!q || !q.length) continue;
     const it = q.shift();
-    if (have.has(it.file_name)) continue;
-    items.push({ ...it, text: p.text });
-    have.add(it.file_name);
+    items.push({ ...it, file_name: p.output_file, text: p.text });
+    have.add(p.output_file);
   }
   if (items.length) console.log(`  resuming: ${items.length} part(s) reused by content (${resume.length} cached)`);
 
@@ -687,6 +694,39 @@ if (!items) {
   items = await synthesize(spoken, a, jobdir, [], itemsCache);
 }
 fs.writeFileSync(itemsCache, JSON.stringify(items.map(i => ({ ...i })), null, 2));
+
+/**
+ * ORDER GATE — run this before the merge, every time.
+ *
+ * The merge concatenates the parts in the order of `items`. If a resumed
+ * part kept a stale file_name, the sort put a block of segments one slot
+ * off: every audio file was intact and the transcript read fine, but the
+ * wrong sentence followed the right one. That is the worst possible
+ * failure — it is invisible to a key check and invisible to a listener
+ * who is not reading along.
+ *
+ * The part records the text it was synthesized from, so the order can be
+ * proven rather than assumed.
+ */
+if (items.length === spoken.length) {
+  const bad = [];
+  for (let i = 0; i < items.length; i++) {
+    const got = (items[i].text || '').trim();
+    if (got && got !== spoken[i].trim()) bad.push({ i: i + 1, got: got.slice(0, 40), want: spoken[i].slice(0, 40) });
+  }
+  if (bad.length) {
+    console.error(`\n✗ 段序校验失败：${bad.length} 段的音轨与稿子不对位，拒绝合并。`);
+    for (const b of bad.slice(0, 6)) {
+      console.error(`  位 ${b.i}`);
+      console.error(`    稿: ${b.want}`);
+      console.error(`    音: ${b.got}`);
+    }
+    console.error('  → 这是续跑缓存沿用旧段号造成的。重新合成受影响的段，或清掉 items.json 后重来。');
+    process.exit(6);
+  }
+  console.log(`  段序校验: ${items.length}/${items.length} 段与稿子逐字对应`);
+}
+
 console.log('downloading...');
 download(items, jobdir);
 checkRatio(items, spoken, jobdir, a.gap);
