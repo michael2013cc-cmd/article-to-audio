@@ -598,6 +598,21 @@ if (a.redo) {
   let cur = 0;
   for (const p of parts) { p.start = cur; cur += p.duration + a.gap; }
   fs.writeFileSync(partsFile, JSON.stringify(parts));
+
+  // The synthesis cache MUST be updated too. It is content-addressed, so a
+  // later run resumes by TEXT — and the text is unchanged by a re-render. If
+  // the cache keeps the old node_id, the next run would silently put the
+  // broken audio back and the fix would evaporate.
+  const itemsFile = path.join(jobdir, 'items.json');
+  if (fs.existsSync(itemsFile)) {
+    const cached = JSON.parse(fs.readFileSync(itemsFile, 'utf8'));
+    const hit = cached.find(c => c.file_name === `part_${String(idx + 1).padStart(3, '0')}.mp3`);
+    if (hit) { hit.node_id = it.node_id; hit.text = text; }
+    else cached.push({ node_id: it.node_id, file_name: `part_${String(idx + 1).padStart(3, '0')}.mp3`, text });
+    fs.writeFileSync(itemsFile, JSON.stringify(cached, null, 2));
+    console.log(`  items.json 已更新（節 ${a.redo} → ${it.node_id}）`);
+  }
+
   console.log(`新片段 ${it.node_id}, ${parts[idx].duration.toFixed(1)}s`);
   merge(parts, jobdir, a.out, a.gap);
   console.log(`merged -> ${a.out}  ${(duration(a.out) / 60).toFixed(2)} min`);
