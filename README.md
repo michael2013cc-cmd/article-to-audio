@@ -246,10 +246,43 @@ article-to-audio/
 │   ├── text-conversion.md            # 转换规则表（含 before/after 实例）
 │   └── voices.md                     # 音色与语速：场景对照 + 默认值
 ├── scripts/
-│   └── narrate.mjs                   # 确定性流水线：合成 → 校验 → 合并
+│   ├── narrate.mjs                   # 确定性流水线：合成 → 校验 → 合并
+│   ├── preflight-all.mjs             # 稿件层预检：假键 / 损坏字符 / 超长段 / 段尾裸数字 / md↔segs
+│   ├── pick-keys.mjs                 # 校验键生成：自动候选 + 人工指定
+│   ├── extract-keys.mjs  keys.mjs    # 键的抽取与中阿数字归一
+│   ├── md2segs.mjs    md.mjs         # 稿 → 段（切点必须落在句号上）/ Markdown 剥离
+│   ├── audit-numbers.mjs             # 源文 ↔ 稿子的数字对账
+│   ├── audit-segments.mjs            # 合成后的逐段时长与字秒比
+│   ├── probe-audio.mjs               # 探针：定位是音频坏了还是转写坏了
+│   ├── merge-episode.mjs             # 整篇合并（等参数二进制拼接，零重编码）
+│   ├── merge-partial.mjs             # 合并未完成的残段
+│   ├── recover-parts.mjs             # 断点续跑
+│   ├── migrate-items-cache.mjs       # 旧版 items.json 迁移
+│   ├── locate-part.mjs               # 段号 → 音檔位置
+│   └── test-keys.mjs                 # 键匹配规则的单元测试
 └── examples/
     └── segments.example.json         # 分段 JSON 样例
 ```
+
+### 合成之前先跑预检（不花任何 API 预算）
+
+```bash
+node scripts/preflight-all.mjs \
+  --pair chip-research/ep12a_segs.json:chip-research/ep12a_keys.json:output/ep12a.md
+```
+
+一次抓出五类「会在合成阶段炸掉」的问题：
+
+- **假键**：校验键不在稿子里 → 永远命中不了，会被报成「未命中」，白跑一轮 TTS+STT
+- **损坏字符**：U+FFFD → `narrate.mjs` 载入时直接中止
+- **超长段**：> 120 字 → STT 分片边界与 TTS 呼吸都受影响
+- **段尾裸数字**：段尾是「8,」这种形状时，TTS 把它单独念出来最容易错（实测「20 億美元」→「21 億」）
+- **md ↔ segs 不一致**：稿子改了但 segs 没重生成 → 音档与交付的稿子对不上
+
+> 自动生成的校验键**也可能是假键**：`MI355X` 的 `355`、`gfx950` 的 `950`、`H100` 的 `100`、
+> `Llama3-70B` 的 `70`、`P95` 的 `95`、`Qwen3-235B-A22B` 的 `235`/`22`、
+> `GPT-5.5` 的 `5.5`、`Claude 4.7` 的 `4.7`、arXiv 编号 `2603.08713` —— 这些是型号与编号，
+> 不是数据。把候选键当 regex 回代稿子，看**每个**出现位置：若全部落在型号内部，就是假键，删掉。
 
 ## 实战记录
 
