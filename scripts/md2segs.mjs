@@ -102,6 +102,23 @@ function main() {
   fs.mkdirSync(path.dirname(a.out), { recursive: true });
   fs.writeFileSync(a.out, JSON.stringify({ segments }, null, 2));
   console.log(`wrote ${a.out} — ${segments.length} segments, ${segments.reduce((n, s) => n + s.length, 0)} chars`);
+
+  // A segment that ENDS on a bare number is a silent-audio risk. The TTS
+  // reads the last token of a segment in isolation, and a trailing figure
+  // like "…覆盖 300" or "…统一总线 2" is exactly the shape that gets
+  // mis-read (measured: "20 億美元" became "21 億"; "1.45 秒" became "1.38").
+  // It is also a sign the cut landed on a comma/space instead of a
+  // sentence terminator. Fix it in the SCRIPT: split the paragraph so the
+  // boundary falls on a full stop.
+  const bareNumber = [];
+  segments.forEach((s, i) => {
+    const tail = s.replace(/\*\*|__/g, '').trim();
+    if (/[\d,.]$/.test(tail)) bareNumber.push({ n: i + 1, tail: tail.slice(-24) });
+  });
+  if (bareNumber.length) {
+    console.log(`\n⚠ ${bareNumber.length} 個段落以裸數字結尾（易被 TTS 念錯，建議在稿子裡讓切點落在句號上）：`);
+    for (const b of bareNumber) console.log(`  段 ${b.n}  …${b.tail}`);
+  }
 }
 
 main();
