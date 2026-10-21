@@ -37,14 +37,18 @@ function splitLong(text, max) {
   const out = [];
   let rest = text;
   while (rest.length > max) {
-    // Look for the last terminator inside [max*0.45, max]
+    // Look for the last terminator inside [max*0.45, max].
+    // The search must start at max-1, not max: a terminator sitting exactly at
+    // index max would give cut = max+1 and emit a segment one char over the
+    // limit — which never gets re-split, so the over-long segment survives
+    // into the TTS and into the STT boundary check.
     let cut = -1;
-    for (let i = Math.min(max, rest.length - 1); i >= Math.floor(max * 0.45); i--) {
+    for (let i = Math.min(max - 1, rest.length - 1); i >= Math.floor(max * 0.45); i--) {
       if (TERMINATORS.includes(rest[i])) { cut = i + 1; break; }
     }
     if (cut === -1) {
       // No terminator in range — fall back to the last comma/、/space, then hard-cut.
-      for (let i = Math.min(max, rest.length - 1); i >= Math.floor(max * 0.45); i--) {
+      for (let i = Math.min(max - 1, rest.length - 1); i >= Math.floor(max * 0.45); i--) {
         if (',，、 '.includes(rest[i])) { cut = i + 1; break; }
       }
     }
