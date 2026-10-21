@@ -78,6 +78,27 @@ for (const spec of pairs) {
     }
   }
 
+  // 假鍵偵測：自動產生的鍵可能是「別人產品型號內部的數字」——
+  // MI355X 的 355、gfx950 的 950、Llama-3.3-70B 的 3.3、Qwen3.5-397B-A17B 的 397/17。
+  // 這些數字確實出現在稿子裡，但不是數據，TTS 念出來時常變形 → 回聽必然報 miss。
+  // 判斷法：把鍵當 regex 回代稿子，若**所有**出現位置的左右鄰居都是英數/標點（落在
+  // token 內部），就是疑似假鍵，提示人工確認（不直接判死，因為偶爾真數字也會挨著英文）。
+  const suspect = [];
+  for (const k of keys) {
+    const n = k.key.replace(/,/g, '');
+    const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    const hits = [];
+    let m;
+    while ((m = re.exec(segs.join('\n'))) !== null) {
+      const before = segs.join('\n').slice(Math.max(0, m.index - 1), m.index);
+      const after = segs.join('\n').slice(m.index + n.length, m.index + n.length + 1);
+      const tokenish = (c) => c === '' || /[A-Za-z0-9.\-_]/.test(c);
+      hits.push(tokenish(before) && tokenish(after));
+      if (hits.length >= 6) break;
+    }
+    if (hits.length && hits.every(Boolean)) suspect.push(k.key);
+  }
+
   const flag = bogus.length || corrupt || long || tail || (consistent !== '一致' && consistent !== 'n/a');
   if (flag) bad = 1;
   console.log(
@@ -88,6 +109,7 @@ for (const spec of pairs) {
     `  md↔segs=${consistent}${flag ? '   ✗' : '   ✓'}`,
   );
   if (bogus.length) console.log(`        ↳ 這些鍵不在稿子裡，會被報成「未命中」：${bogus.join(', ')}`);
+  if (suspect.length) console.log(`        ⚠ 疑似型號內部的假鍵（建議人工確認後刪除）：${suspect.join(', ')}`);
   if (tail) {
     console.log(`        ↳ 段尾裸數字段落：${tailHits.map(([i, s]) => `${i}「${s.replace(/\*\*|__/g, '').trim().slice(-24)}」`).join('  ')}`);
   }

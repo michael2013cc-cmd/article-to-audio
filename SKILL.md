@@ -333,7 +333,8 @@ node scripts/preflight-all.mjs \
   --pair chip-research/ep12a_segs.json:chip-research/ep12a_keys.json:output/ep12a.md
 ```
 
-It checks five things per segment and exits 1 if any fails:
+It checks five things per segment and exits 1 if any fails, plus one warning that
+needs a human eye:
 
 | check | what it catches | why it matters |
 |---|---|---|
@@ -342,6 +343,7 @@ It checks five things per segment and exits 1 if any fails:
 | 超長段 | a segment over 120 characters | wrecks STT shard boundaries and TTS breathing |
 | 段尾裸數字 | a segment ending on a digit/comma/period | the TTS reads the trailing token in isolation: measured "20 億美元" → "21 億", "1.45 秒" → "1.38" |
 | md↔segs | the script was edited but the segs were not regenerated | the audio and the delivered script drift apart |
+| ⚠ 疑似型號假鍵 | a key that only ever appears *inside* a model name | see below — a guaranteed miss dressed up as a real one |
 
 The 段尾裸數字 rule is deliberately the same regex `md2segs.mjs` uses
 (`/[\d,.]$/` after stripping markdown) — two tools judging the same shape with
@@ -349,12 +351,16 @@ different rules produce false alarms that train you to ignore the real ones.
 
 **Automatic keys can be false keys too.** The auto-ranker does not know that `355`
 inside `MI355X`, `950` inside `gfx950`, `100` inside `H100`, `70` inside
-`Llama3-70B`, `95` inside `P95`, `235`/`22` inside `Qwen3-235B-A22B`, `5.5` inside
-`GPT-5.5`, `4.7` inside `Claude 4.7`, or a whole arXiv id like `2603.08713` are
-model names, not data. Test each candidate by regexing it back through the script
-and looking at *every* hit: if all of them sit inside a model/version/identifier, it
-is a false key — delete it. Structural keys (the episode number `17`/`18`, the year
-`2026`) are fine to keep.
+`Llama3-70B`, `95` inside `P95`, `235`/`22` inside `Qwen3-235B-A22B`, `3.3` inside
+`Llama-3.3-70B`, `300` inside `MI300X`, `397`/`17` inside `Qwen3.5-397B-A17B`,
+`350` inside `MI350X`, `5.5` inside `GPT-5.5`, `4.7` inside `Claude 4.7`, or a
+whole arXiv id like `2603.08713` are model names, not data. Test each candidate by
+regexing it back through the script and looking at *every* hit: if all of them sit
+inside a model/version/identifier, it is a false key — delete it. The preflight
+tool flags these as ⚠ 疑似型號假鍵 (a warning, not a hard failure, because a real
+number can occasionally sit next to an English word).
+
+Structural keys (the episode number `17`/`18`, the year `2026`) are fine to keep.
 
 ## Interrupted runs — resume without re-spending
 
