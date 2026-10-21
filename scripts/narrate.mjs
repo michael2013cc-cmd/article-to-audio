@@ -77,8 +77,42 @@ function parseArgs(argv) {
   return a;
 }
 
-const run = (cmd, argv, opts = {}) =>
-  execFileSync(cmd, argv, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
+/** Sync sleep — used by the mcode-tools retry loop. */
+const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * The platform's connector signature check fails intermittently:
+ *   error: invalid signature (path=/minimax-cloud/api/v1/connectors/connected-tools/list)
+ * Measured 2026-10-21: 2 of 3 identical calls failed while the same command
+ * succeeded seconds later; the tool catalogue and every other connector call
+ * worked throughout. It is a platform-side blip, and it hit FOUR different
+ * sub-commands (batch_text_to_audio, get_asset_url, upload_temp_url, the STT
+ * connector call) in the same 20-minute window.
+ *
+ * So the retry belongs at the single choke point — every mcode-tools call goes
+ * through `run()` — not in each caller. A blip must never kill a 100-segment
+ * episode after 20 minutes of work.
+ */
+const TRANSIENT = /invalid signature|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|HTTP 5\d\d|status code 5\d\d|temporarily unavailable/i;
+
+function run(cmd, argv, opts = {}) {
+  const isTools = cmd === 'mcode-tools';
+  const tries = isTools ? 8 : 1;
+  let last;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return execFileSync(cmd, argv, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
+    } catch (e) {
+      last = e;
+      const blob = `${e.message}\n${e.stderr || ''}\n${e.stdout || ''}`;
+      if (!isTools || !TRANSIENT.test(blob) || attempt === tries) throw e;
+      const wait = Math.min(2000 * attempt, 10000);
+      console.log(`  (mcode-tools 暫時性錯誤，重試 ${attempt}/${tries - 1}，${wait}ms 後)`);
+      sleepSync(wait);
+    }
+  }
+  throw last;
+}
 
 /** ffprobe: note the SINGLE dash. `--show_entries` fails on ffprobe 5.1 with
  *  "Option not found" AND empty stdout, which surfaces as float('') far from here. */
@@ -108,7 +142,11 @@ function loadSpoken(file) {
   return { segs: raw, spoken: raw.map(stripMarkdown) };
 }
 
-/** One connector call for a chunk of parts. Returns {ok:[], failed:[indices]}. */
+/**
+ * One connector call for a chunk of parts. Returns {ok:[], failed:[indices]}.
+ * Transient connector failures are retried inside `run()` — the single choke
+ * point for every mcode-tools call — so there is no retry loop here.
+ */
 function callBatch(chunk, jobdir, tag) {
   const f = path.join(jobdir, `args_${tag}.json`);
   fs.writeFileSync(f, JSON.stringify({ requests: chunk }));
@@ -296,10 +334,18 @@ async function sttOnce(file, attempt = 1) {
     const args = { audio_info: { url: temp_url, mime_type: 'audio/mpeg', prompt: '逐字转写，保留繁體中文' } };
     const d = JSON.parse(run('mcode-tools', ['connector', 'call', STT, '--args', JSON.stringify(args)], { timeout: 240_000 }));
     const t = d.transcription || '';
-    if (!t && attempt < 2) { console.log(`    (empty, retrying ${file})`); return sttOnce(file, attempt + 1); }
+    if (!t && attempt < 4) { console.log(`    (empty, retrying ${file})`); await sleep(1500 * attempt); return sttOnce(file, attempt + 1); }
     return t;
   } catch (e) {
-    if (attempt < 2) { console.log(`    (${String(e.message).slice(0, 60)}, retrying)`); return sttOnce(file, attempt + 1); }
+    // The connector's signature check fails intermittently (see callBatch).
+    // A lost piece must not throw away the other pieces of a 150 s-chunked file,
+    // so retry every failure type — the cost of a retry is ~2 s, the cost of a
+    // lost piece is a hole in the verification.
+    if (attempt < 4) {
+      console.log(`    (${String(e.message).slice(0, 60)}, retry ${attempt}/3)`);
+      await sleep(1500 * attempt);
+      return sttOnce(file, attempt + 1);
+    }
     console.error(`    !! gave up on ${path.basename(file)}: ${String(e.message).slice(0, 80)}`);
     return '';
   }
