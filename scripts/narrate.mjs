@@ -150,8 +150,29 @@ function loadSpoken(file) {
 function callBatch(chunk, jobdir, tag) {
   const f = path.join(jobdir, `args_${tag}.json`);
   fs.writeFileSync(f, JSON.stringify({ requests: chunk }));
-  const d = JSON.parse(run('mcode-tools', ['connector', 'call', TOOL, '--args-file', f], { timeout: TTS_TIMEOUT }));
-  if (d.code !== 0) throw new Error(`${tag}: code=${d.code} ${d.message}`);
+  let d;
+  try {
+    d = JSON.parse(run('mcode-tools', ['connector', 'call', TOOL, '--args-file', f], { timeout: TTS_TIMEOUT }));
+  } catch (e) {
+    // 連接器層級的暫時性故障（invalid signature / 網路中斷 / 5xx）不該讓整個 run 死掉。
+    // 2026-10-22 實測：平台音訊後端回 500 與 invalid signature 交替出現時，
+    // 一次批次呼叫拋錯就會讓整段放棄，前面已成功的部分（items.json 裡的快取）也白跑。
+    // 改成「這批全失敗」交給 Pass 2 的補抓機制，進度就能跨輪次累積。
+    const msg = String(e.message).slice(0, 140);
+    console.error(`  !! batch ${tag} 呼叫失敗（轉為本批全失敗，續跑機制接手）：${msg}`);
+    return {
+      code: 1, message: msg, success_items: [],
+      failed_items: chunk.map((_, i) => ({ index: i, error_msg: msg })),
+    };
+  }
+  if (d.code !== 0) {
+    const msg = `${tag}: code=${d.code} ${d.message}`;
+    console.error(`  !! batch ${tag} 回報失敗（轉為本批全失敗，續跑機制接手）：${String(d.message).slice(0, 140)}`);
+    return {
+      code: d.code, message: d.message, success_items: [],
+      failed_items: chunk.map((_, i) => ({ index: i, error_msg: String(d.message).slice(0, 140) })),
+    };
+  }
   return d;
 }
 
