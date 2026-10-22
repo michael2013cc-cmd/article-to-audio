@@ -458,6 +458,35 @@ from #11 onward. The part names are padded to three digits, and the sort is nume
   (asset node ids expire — pull them to the workspace), and tell the user to top up.
   Everything else can still be finished offline: write the script, run `audit-numbers.mjs`,
   prepare the segment and key files, and leave a resume command in the playlist.
+- **The platform's audio GENERATION pipeline is down** — symptoms: `batch_text_to_audio`
+  and `synthesize_speech` both return `audio post-processing failed: an internal
+  server-side error`, and `batch_text_to_music` returns the same with `music
+  post-processing failed`. STT (`listen_audio`) stays healthy and `connector tools` still
+  returns 200. That combination means the whole generation+post-processing path is dead
+  server-side — there is **no client-side workaround** (bearer token, other region, other
+  base URL all fail the same way). Do not confuse it with the sandbox-egress signature
+  fault, which looks different and does have workarounds.
+  - **Never gate on `connector tools` alone.** It returns 200 while TTS is dead, so a
+    poller that only probes the tool list will launch a full synthesis every cycle and
+    fail. Send one minimal single-sentence TTS request first; only start if it succeeds.
+  - **Keep the platform poller running** — the outage does clear on its own (one measured
+    outage lasted 30 h 42 m). Meanwhile use the fallback voice below so the episode is
+    not blocked.
+
+### Fallback voice when the platform TTS is down
+
+`scripts/google-tts.mjs` synthesises through Google Translate's TTS endpoint
+(plain HTTPS GET, no websocket, no key). It is noticeably slower than the platform
+voice (~27% longer for the same script) and uses a **different voice**, so:
+
+- write the output with a `.google` suffix so both versions coexist and the user picks;
+- label clearly which voice the delivered file uses;
+- read `references/fallback-voice.md` for the endpoint, the 200-char limit, the
+  chunking rules, and the two verification traps (concat drops one MP3 header frame →
+  no sample-level md5 comparison; and the reverse-control for the segment-order gate
+  must NOT use another segment's opening, because every segment opens with nearly the
+  same sentence).
+
 
 ## Examples
 
