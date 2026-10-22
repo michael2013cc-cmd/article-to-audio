@@ -357,12 +357,48 @@ function merge(items, jobdir, out, gap) {
  *  a single piece failed — a lost 14th piece must not throw away the other 13. */
 const STT_MAX = 150;
 
+/* A content-filter hit is NOT a clean STT failure. The connector call SUCCEEDS
+ * and hands back the filter's own English prose ("... blocked by Gemini's
+ * filters ...") in the `transcription` field, as if it were the audio's text.
+ * Left unchecked it silently deletes a whole 150 s slice of audio from the
+ * transcript — measured 8 lost slices across the three ep13 fallback parts
+ * (2 + 2 + 4), i.e. ~20% of the audio had no transcript at all while the run
+ * still reported success. The slice is recovered by re-cutting the same time
+ * range into shorter sub-pieces, which trip the filter far less often. */
+const FILTER_MARKERS = ['blocked by Gemini', 'prohibited_content', 'content filter'];
+
+function isFilterError(t) {
+  if (!t) return false;
+  return FILTER_MARKERS.some(m => t.includes(m));
+}
+
+/* Belt-and-braces: the per-piece recovery above handles the common case, but
+ * a filter can also slip through on a *sub*-piece. Whatever survives into the
+ * final transcript must be surfaced loudly — a key-coverage number computed
+ * on a transcript with a hole in it looks fine and silently under-reports. */
+function reportFilterErrors(t) {
+  const n = (t.match(/blocked by Gemini/g) || []).length;
+  if (n) {
+    console.error(`  !! ${n} transcript chunk(s) are content-filter error text, NOT transcription — those audio slices are UNVERIFIED`);
+  }
+  return n;
+}
+
 async function sttOnce(file, attempt = 1) {
   try {
     const { temp_url } = JSON.parse(run('mcode-tools', ['upload_temp_url', path.resolve(file)], { timeout: 180_000 }));
     const args = { audio_info: { url: temp_url, mime_type: 'audio/mpeg', prompt: '逐字转写，保留繁體中文' } };
     const d = JSON.parse(run('mcode-tools', ['connector', 'call', STT, '--args', JSON.stringify(args)], { timeout: 240_000 }));
     const t = d.transcription || '';
+    if (isFilterError(t)) {
+      if (attempt < 3) {
+        console.log(`    (content filter, retry ${attempt}/2 on ${path.basename(file)})`);
+        await sleep(1500 * attempt);
+        return sttOnce(file, attempt + 1);
+      }
+      console.log(`    (content filter x3 on ${path.basename(file)})`);
+      return '';
+    }
     if (!t && attempt < 4) { console.log(`    (empty, retrying ${file})`); await sleep(1500 * attempt); return sttOnce(file, attempt + 1); }
     return t;
   } catch (e) {
@@ -394,7 +430,29 @@ async function transcribeFull(out, jobdir) {
       '-i', out, '-c', 'copy', piece]);
     const t = await sttOnce(piece);
     console.log(`    piece ${i + 1}/${n} (${((i + 1) * STT_MAX).toFixed(0)}s): ${t.length} chars`);
-    if (!t.length) failed.push(i + 1);
+    if (!t.length) {
+      // Recovery: re-cut the SAME time range into 3 shorter pieces. Fast seek
+      // (`-ss` before `-i`) + stream copy lands on the nearest keyframe, which
+      // is at or BEFORE the requested offset — so a sub-piece may overlap its
+      // neighbour but can never leave a gap. Overlap is safe for coverage.
+      const SUB = 50;
+      let sub = '';
+      for (let k = 0; k < 3; k++) {
+        const subFile = path.join(jobdir, `stt_${i}_${k}.mp3`);
+        run('ffmpeg', ['-y', '-v', 'error', '-ss', String(i * STT_MAX + k * SUB), '-t', String(SUB),
+          '-i', out, '-c', 'copy', subFile]);
+        const st = await sttOnce(subFile);
+        if (!st.length) console.log(`    (sub-piece ${i + 1}.${k + 1} also blocked)`);
+        sub += st;
+      }
+      if (sub.length) {
+        console.log(`    piece ${i + 1} recovered via 3 sub-pieces (${sub.length} chars)`);
+        text += sub;
+        fs.writeFileSync(tfile, text);
+        continue;
+      }
+      failed.push(i + 1);
+    }
     text += t;
     // Save after EVERY piece: a failure at the end must not discard the rest.
     fs.writeFileSync(tfile, text);
@@ -597,6 +655,7 @@ if (a.verifyOnly) {
   if (segs) gateKeys(keys, segs);
   const t = await transcribeFull(a.verifyOnly, jobdir);
   fs.writeFileSync(path.join(jobdir, 'transcript.txt'), t);
+  reportFilterErrors(t);
   const missing = matchKeys(t, keys);
   console.log(`STT ${t.length} chars; ${keys.length - missing.length}/${keys.length} keys matched`);
   if (missing.length) console.log(`keys not matched: ${missing.map(m => m.key).join(', ')}`);
@@ -747,6 +806,7 @@ if (a.recheck) {
 // so keys can be iterated for free after a run.
 if (a.checkTxt) {
   const t = fs.readFileSync(a.checkTxt, 'utf8');
+  reportFilterErrors(t);
   const missing = matchKeys(t, keys);
   console.log(`\ntranscript: ${a.checkTxt}  (${t.length} chars)`);
   console.log(`keys: ${keys.length - missing.length}/${keys.length} matched`);
@@ -836,6 +896,7 @@ if (keys.length && !a.noStt) {
   console.log('verifying (STT round-trip)...');
   const t = await transcribeFull(a.out, jobdir);
   fs.writeFileSync(path.join(jobdir, 'transcript.txt'), t);
+  reportFilterErrors(t);
   const missing = matchKeys(t, keys);
   console.log(`  STT ${t.length} chars; ${keys.length - missing.length}/${keys.length} keys matched`);
   if (missing.length) {
