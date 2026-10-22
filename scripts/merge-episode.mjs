@@ -58,8 +58,12 @@ for (let i = 0; i < parts.length; i++) {
   total += metas[i].dur;
   if (i !== parts.length - 1) {
     const sil = path.join(tmpDir, `s${i}.mp3`);
-    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=32000:cl=mono',
-      '-t', String(gap), '-c:a', 'libmp3lame', '-b:a', '128k', sil]);
+    // 靜音的取樣率與位元率必須跟各段一致，否則 concat 會錯位或報參數不符。
+    // 平台的語音是 32000 Hz / 128 kbps；備援（Google TTS）是 24000 Hz / 64 kbps
+    // → 一律從第一段推導，不要寫死。
+    const br = String(Math.round(Number(ref.br || 128000) / 1000)) + 'k';
+    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', `anullsrc=r=${ref.sr}:cl=mono`,
+      '-t', String(gap), '-c:a', 'libmp3lame', '-b:a', br, sil]);
     lines.push(`file '${sil}'`);
     total += gap;
   }
