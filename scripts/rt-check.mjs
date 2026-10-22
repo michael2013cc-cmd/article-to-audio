@@ -28,7 +28,9 @@ function matchKeys(text, keys) {
   const norm = normalizeScript([text]);
   const missing = [];
   for (const k of keys) {
-    const forms = [...(k.alts?.length ? k.alts : []), k.key];
+    const label = typeof k === 'object' && k !== null ? k.key : k;
+    const alts = (typeof k === 'object' && k !== null && Array.isArray(k.alts) && k.alts.length) ? k.alts : [label];
+    const forms = [...alts, label];
     for (const f of forms) {
       const plain = f.replace(/,/g, '');
       if (plain !== f) forms.push(plain);

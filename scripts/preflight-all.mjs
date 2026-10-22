@@ -60,9 +60,13 @@ for (const spec of pairs) {
   // 正交化成 538000000，鍵「5.38」就再也比不中了。
   const rt = normalizeScript([normalizeScript([segs.join('\n')])]);
   const rtMissing = keys.filter((k) => {
-    const forms = [...(k.alts?.length ? k.alts : []), k.key];
+    // A key file may hold plain strings instead of {key, alts} objects.
+    const label = typeof k === 'object' && k !== null ? k.key : k;
+    const alts = (typeof k === 'object' && k !== null && Array.isArray(k.alts) && k.alts.length)
+      ? k.alts : [label];
+    const forms = [...alts, label];
     for (const f of forms) {
-      const plain = f.replace(/,/g, '');
+      const plain = String(f).replace(/,/g, '');
       if (plain !== f) forms.push(plain);
     }
     return !forms.some((f) => rt.includes(f));
@@ -130,7 +134,7 @@ for (const spec of pairs) {
   );
   if (bogus.length) console.log(`        ↳ 這些鍵不在稿子裡，會被報成「未命中」：${bogus.join(', ')}`);
   if (rtMissing.length) {
-    console.log(`        ↳ 這些鍵連「TTS 念出來再讀回來」的稿子都比不中，**永遠不可能命中**（鍵缺縮放形式）：${rtMissing.map((k) => k.key).join(', ')}`);
+    console.log(`        ↳ 這些鍵連「TTS 念出來再讀回來」的稿子都比不中，**永遠不可能命中**（鍵缺縮放形式）：${rtMissing.map((k) => (typeof k === 'object' && k !== null ? k.key : k)).join(', ')}`);
     console.log(`          修法：node scripts/enrich-keys.mjs --segments ${path.basename(segsPath)} --keys ${path.basename(keysPath)}`);
   }
   if (suspect.length) console.log(`        ⚠ 疑似型號內部的假鍵（建議人工確認後刪除）：${suspect.join(', ')}`);

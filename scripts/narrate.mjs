@@ -600,14 +600,18 @@ function matchKeys(text, keys) {
   const norm = normalizeScript([text]);
   const missing = [];
   for (const k of keys) {
-    const forms = [...(k.alts?.length ? k.alts : []), k.key];
+    // A key file may hold plain strings instead of {key, alts} objects.
+    const label = typeof k === 'object' && k !== null ? k.key : k;
+    const alts = (typeof k === 'object' && k !== null && Array.isArray(k.alts) && k.alts.length)
+      ? k.alts : [label];
+    const forms = [...alts, label];
     // The key carries thousands separators ("45,000") but the normalised
     // transcript never does: the TTS reads "45,000" as "四萬五千", which
     // normalises to "45000". Comparing the comma-bearing key against it
     // always misses. Add the separator-free form as an accepted rendering.
     // Measured on ep08a: 45,000 / 30,000 / 25,000 all missed this way.
     for (const f of forms) {
-      const plain = f.replace(/,/g, '');
+      const plain = String(f).replace(/,/g, '');
       if (plain !== f) forms.push(plain);
     }
     const found = forms.some(f => text.includes(f) || norm.includes(f));
