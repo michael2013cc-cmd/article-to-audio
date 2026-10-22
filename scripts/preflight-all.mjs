@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { preflight } from './keys.mjs';
+import { preflight, normalizeScript } from './keys.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -52,6 +52,21 @@ for (const spec of pairs) {
   const segs = loadSegs(segsPath);
   const keys = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
   const bogus = preflight(keys, segs);
+  // 「TTS 迴圈」檢查：把稿子正規化（＝模擬 TTS 把數字念出來、STT 讀回來），
+  // 再拿正交化後的文字去比對鍵。連自己的稿子都對不上的鍵，**永遠不可能命中**
+  // —— 那是鍵與稿件表示形式對不上，不是音頻的問題。
+  // 實測抓到過 6 個（ep15a 的 5.38／2.69 億、ep15b 的 459.68 萬／4.8 萬、
+  // ep16a 的 14.07 億）：稿寫「5.38 亿元」，TTS 念「五点三八億」，
+  // 正交化成 538000000，鍵「5.38」就再也比不中了。
+  const rt = normalizeScript([normalizeScript([segs.join('\n')])]);
+  const rtMissing = keys.filter((k) => {
+    const forms = [...(k.alts?.length ? k.alts : []), k.key];
+    for (const f of forms) {
+      const plain = f.replace(/,/g, '');
+      if (plain !== f) forms.push(plain);
+    }
+    return !forms.some((f) => rt.includes(f));
+  });
   const corrupt = segs.filter((s) => /\ufffd/.test(s)).length;
   const long = segs.filter((s) => s.length > 120).length;
   // 與 md2segs.mjs 用同一條規則（去 markdown 後以數字／逗號／句點結尾），
@@ -103,16 +118,21 @@ for (const spec of pairs) {
     if (hits.length && hits.every(Boolean)) suspect.push(label);
   }
 
-  const flag = bogus.length || corrupt || long || tail || (consistent !== '一致' && consistent !== 'n/a');
+  const flag = bogus.length || rtMissing.length || corrupt || long || tail || (consistent !== '一致' && consistent !== 'n/a');
   if (flag) bad = 1;
   console.log(
     `${path.basename(segsPath).replace(/_segs\.json$/, '').padEnd(6)} segs=${String(segs.length).padStart(3)}` +
     `  keys=${String(keys.length).padStart(3)}` +
     `  假鍵=${bogus.length ? bogus.join(',') : '0'}` +
+    `  迴圈不中=${rtMissing.length ? rtMissing.map((k) => k.key).join(',') : '0'}` +
     `  損壞=${corrupt}  超長=${long}  段尾裸數字=${tail}` +
     `  md↔segs=${consistent}${flag ? '   ✗' : '   ✓'}`,
   );
   if (bogus.length) console.log(`        ↳ 這些鍵不在稿子裡，會被報成「未命中」：${bogus.join(', ')}`);
+  if (rtMissing.length) {
+    console.log(`        ↳ 這些鍵連「TTS 念出來再讀回來」的稿子都比不中，**永遠不可能命中**（鍵缺縮放形式）：${rtMissing.map((k) => k.key).join(', ')}`);
+    console.log(`          修法：node scripts/enrich-keys.mjs --segments ${path.basename(segsPath)} --keys ${path.basename(keysPath)}`);
+  }
   if (suspect.length) console.log(`        ⚠ 疑似型號內部的假鍵（建議人工確認後刪除）：${suspect.join(', ')}`);
   if (tail) {
     console.log(`        ↳ 段尾裸數字段落：${tailHits.map(([i, s]) => `${i}「${s.replace(/\*\*|__/g, '').trim().slice(-24)}」`).join('  ')}`);
