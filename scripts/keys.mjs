@@ -95,8 +95,14 @@ function parseCnInt(s) {
   }
   if (!sawAny) return null;
   // Round: 5.1 × 10^8 is 509999999.99999994 in binary floating point.
+  // BUT the rounding must not be applied to large magnitudes: out × 1e6
+  // overflows 2^53 (9.007e15) well before 1e8, and the multiply itself
+  // loses the precision the rounding was meant to restore. Measured:
+  // "294.4 億" → 29439999999.999996 instead of 29440000000.
   const out = total + section + num;
-  return Number.isFinite(out) ? Math.round(out * 1e6) / 1e6 : out;
+  if (!Number.isFinite(out)) return out;
+  if (Math.abs(out) >= 1e6) return Math.round(out);
+  return Math.round(out * 1e6) / 1e6;
 }
 
 /** Walk backwards over " 1.5" / " 13" / "3" and return the index where the
@@ -148,8 +154,12 @@ export function parseChineseNumber(run) {
   if (iv === null) return null;
   if (!fracPart) {
     // Round: 5.1 × 10^8 is 509999999.99999994 in binary floating point.
+    // The rounding must not be applied above 1e6: v × 1e6 overflows 2^53
+    // and the multiply itself destroys the precision the rounding restores.
+    // Measured: "294.4 億" → 29439999999.999996 instead of 29440000000.
     const v = bigUnit ? iv * CN_BIG_UNIT[bigUnit] : iv;
-    return { value: Math.round(v * 1e6) / 1e6, bigUnit };
+    if (!Number.isFinite(v)) return { value: v, bigUnit };
+    return { value: Math.abs(v) >= 1e6 ? Math.round(v) : Math.round(v * 1e6) / 1e6, bigUnit };
   }
   let frac = '';
   for (const ch of fracPart) {
@@ -179,6 +189,16 @@ function renderings(value, bigUnit) {
     }
   } else {
     out.add(String(value));
+    // A decimal with a big unit also has a scaled rendering: "294.4 億" is
+    // 29,440,000,000 once the TTS reads the unit out. Without this alt the
+    // key "294.4" can never match a transcript that says the scaled form.
+    if (bigUnit) {
+      const base = bigUnit === '亿' ? 1e8 : 1e4;
+      const scaled = value * base;
+      if (Number.isFinite(scaled) && Math.abs(scaled) >= 1e6) {
+        out.add(String(Math.round(scaled)));
+      }
+    }
   }
   return [...out];
 }
@@ -394,11 +414,34 @@ export function extractCandidates(segments) {
       const suffix = chars.slice(j, k).join('');
       const value = parseFloat(num.replace(/,/g, ''));
       if (!Number.isFinite(value)) { i = j - 1; continue; }
+      // A trailing big unit scales the value: the script's "294.4 億" is read
+      // out as 二百九十四點四億, which the normaliser turns into
+      // "29440000000" — a rendering the key "294.4" would never match.
+      // The house style puts a space between the figure and a Chinese unit
+      // ("294.4 億美元"), and the suffix scan stops at that space, so the
+      // unit is also looked for one space further out. Bounded to a 4-char
+      // window and a single optional space so "35.7 到 2028 年约 2 萬" cannot
+      // bind a distant 萬 to the wrong figure.
+      const altList = [num, ...numericForms(value), num.replace(/,/g, '')];
+      const win = chars.slice(j, j + 4).join('').replace(/^[  ]+/, '');
+      const sfx = suffix.replace(/^[  ]+/, '');
+      // 万亿 / 萬億 is a COMPOUND unit (万 × 亿 = 1e12), not 万 (1e4).
+      const bigC = /^([万萬亿億])/.exec(sfx)?.[1]
+        || /^([万萬]亿|億|[亿億][万萬])/.exec(win)?.[1]
+        || /^([万萬])/.exec(win)?.[1]
+        || /^([亿億])/.exec(win)?.[1];
+      if (bigC && !Number.isInteger(value)) {
+        const isYi = /[亿億]/.test(bigC);
+        const isWan = /[万萬]/.test(bigC);
+        const base = isYi && isWan ? 1e12 : (isYi ? 1e8 : 1e4);
+        const scaled = value * base;
+        if (Number.isFinite(scaled)) altList.push(String(Math.round(scaled)));
+      }
       push({
         key: num,
         // The literal form belongs in the alt set: "46,225" must match a
         // transcript that says "46,225", not only the comma-free variant.
-        alts: [num, ...numericForms(value), num.replace(/,/g, '')],
+        alts: [...new Set(altList)],
         tier: 'A',
         value,
         segment: si,
