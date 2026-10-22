@@ -85,7 +85,11 @@ for (const spec of pairs) {
   // token 內部），就是疑似假鍵，提示人工確認（不直接判死，因為偶爾真數字也會挨著英文）。
   const suspect = [];
   for (const k of keys) {
-    const n = k.key.replace(/,/g, '');
+    // 鍵檔可能是「字串陣列」或「物件陣列 {key, alts, ...}」——
+    // keys.mjs 的 preflight() 兩種都收，這裡也要一致，否則字串格式會直接 crash。
+    const label = (k && typeof k === 'object') ? String(k.key ?? '') : String(k ?? '');
+    if (!label) continue;
+    const n = label.replace(/,/g, '');
     const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
     const hits = [];
     let m;
@@ -96,7 +100,7 @@ for (const spec of pairs) {
       hits.push(tokenish(before) && tokenish(after));
       if (hits.length >= 6) break;
     }
-    if (hits.length && hits.every(Boolean)) suspect.push(k.key);
+    if (hits.length && hits.every(Boolean)) suspect.push(label);
   }
 
   const flag = bogus.length || corrupt || long || tail || (consistent !== '一致' && consistent !== 'n/a');
