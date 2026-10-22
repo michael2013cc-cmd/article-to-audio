@@ -43,6 +43,17 @@ function numbersIn(text) {
   for (const m of text.matchAll(/(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/g)) {
     out.push({ v: parseFloat(m[1].replace(/,/g, '')), raw: m[1], at: m.index });
   }
+  // An Arabic figure followed by a Chinese myriad unit is ONE number:
+  // "10 万" is 100000, not 10. The script style puts a space between the
+  // figure and the unit ("10 万级沙箱"), so the unit must be picked up from
+  // the text that follows — otherwise the audit reports a phantom "dropped"
+  // number for every such figure. Measured: ep15/ep16 both reported
+  // 100000 as "in the source but not in the script" when the script did
+  // carry it.
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*([万亿億兆])\s*(?![\d万億亿兆])/g)) {
+    const base = m[2] === '万' || m[2] === '萬' ? 1e4 : m[2] === '亿' || m[2] === '億' ? 1e8 : 1e12;
+    out.push({ v: parseFloat(m[1]) * base, raw: m[0].trim(), at: m.index });
+  }
   // Chinese numeral runs: 十亿 / 二十万 / 三千 / 一点五
   const re = /[零〇一二两三四五六七八九十百千万億亿兆]+(?:点[零〇一二三四五六七八九]+)?/g;
   for (const m of text.matchAll(re)) {
