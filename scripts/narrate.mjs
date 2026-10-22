@@ -36,6 +36,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { mergeCacheItems, loadCache } from './cache.mjs';
 import path from 'node:path';
 import { extractCandidates, rankCandidates, preflight, lintNumbers, normalizeScript } from './keys.mjs';
 import { stripMarkdown } from './md.mjs';
@@ -190,7 +191,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  */
 async function synthesize(segs, opts, jobdir, resume = [], cachePath = null) {
   fs.mkdirSync(jobdir, { recursive: true });
-  const save = () => { if (cachePath) fs.writeFileSync(cachePath, JSON.stringify(items.map(i => ({ ...i, text: i.text })), null, 2)); };
+  // 合併存檔，**絕不覆蓋**磁碟上已有的其他段落。
+  // 2026-10-22 實測的坑：舊版是直接覆寫 → 只要有一次「從頭重合成」，
+  // 前面累積了 60 段的進度就會在第一次 save() 時被清空。
+  const save = () => {
+    if (!cachePath) return;
+    const merged = mergeCacheItems(loadCache(cachePath), items);
+    fs.writeFileSync(cachePath, JSON.stringify(merged, null, 2));
+  };
   const parts = segs.map((text, i) => ({
     text,
     voice_id: opts.voice,
@@ -766,16 +774,24 @@ console.log('synthesizing...');
 const itemsCache = path.join(jobdir, 'items.json');
 let items = null;
 if (fs.existsSync(itemsCache)) {
+  // 只有「快取解析不出來」才該從頭重合成。
+  // 續跑過程本身失敗（平台故障 → 補抓機制用盡）必須往外拋，
+  // 讓快取原封不動留著 —— 舊版把兩者混為一談，結果一次失敗就把
+  // 前面累積的段落全部清空（2026-10-22 在 ep13a 上實際發生，60 段 → 2 段）。
+  let cached = null;
   try {
-    const cached = JSON.parse(fs.readFileSync(itemsCache, 'utf8'));
+    cached = JSON.parse(fs.readFileSync(itemsCache, 'utf8'));
+  } catch (e) {
+    console.error(`  cache unreadable, re-synthesizing: ${e.message}`);
+  }
+  if (cached) {
     console.log(`  cache: ${cached.length} part(s) on disk`);
     items = await synthesize(spoken, a, jobdir, cached, itemsCache);
-  } catch (e) { console.error(`  cache unreadable, re-synthesizing: ${e.message}`); }
+  }
 }
 if (!items) {
   items = await synthesize(spoken, a, jobdir, [], itemsCache);
 }
-fs.writeFileSync(itemsCache, JSON.stringify(items.map(i => ({ ...i })), null, 2));
 
 /**
  * ORDER GATE — run this before the merge, every time.

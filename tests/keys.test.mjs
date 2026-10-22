@@ -13,6 +13,8 @@ import {
   preflight, rankCandidates, lintNumbers,
 } from '../scripts/keys.mjs';
 import { stripMarkdown } from '../scripts/md.mjs';
+import { mergeCacheItems, loadCache } from '../scripts/cache.mjs';
+import fs from 'node:fs';
 
 const seg = (s) => [s];
 
@@ -224,4 +226,45 @@ test('stripMarkdown 去掉反引號', () => {
 
 test('stripMarkdown 不動一般文字', () => {
   assert.equal(stripMarkdown('普通句子。'), '普通句子。');
+});
+
+/* ---------- cache.mjs：續跑快取只能合併，永不覆蓋 ---------- */
+
+test('mergeCacheItems 保留磁碟上已有的項目（回歸測試）', () => {
+  // 2026-10-22 在 ep13a 上實際發生：一次「從頭重合成」把 60 段進度清成 2 段。
+  const prev = Array.from({ length: 60 }, (_, i) => ({
+    node_id: `n${i}`, file_name: `part_${String(i + 1).padStart(3, '0')}.mp3`, text: `第 ${i} 段`,
+  }));
+  const next = [{ node_id: 'nX', file_name: 'part_081.mp3', text: '新的一段' }];
+  const merged = mergeCacheItems(prev, next);
+  assert.equal(merged.length, 61, '舊的 60 段不能因為新合成了一段就被清掉');
+});
+
+test('mergeCacheItems 以 node_id+file_name+text 去重', () => {
+  const one = { node_id: 'n1', file_name: 'part_001.mp3', text: '甲' };
+  assert.equal(mergeCacheItems([one], [one]).length, 1);
+});
+
+test('mergeCacheItems 同一段文字出現兩次要保留兩筆', () => {
+  // 稿裡同一句話可能被切成兩段 → 需要兩個音檔，不能去重掉。
+  const a = { node_id: 'n1', file_name: 'part_001.mp3', text: '甲' };
+  const b = { node_id: 'n2', file_name: 'part_002.mp3', text: '甲' };
+  assert.equal(mergeCacheItems([a], [b]).length, 2);
+});
+
+test('mergeCacheItems 丟掉缺 node_id 或 text 的殘缺項目', () => {
+  // 沒有 text 的項目對續跑沒有用（續跑靠 text 配對）→ 丟掉。
+  assert.equal(mergeCacheItems([{ file_name: 'x.mp3' }], [{ node_id: 'n', file_name: 'y.mp3' }]).length, 0);
+  assert.equal(mergeCacheItems([{ node_id: 'n', file_name: 'x.mp3' }], []).length, 0);
+});
+
+test('loadCache 讀不到檔案時回傳空陣列而不是拋錯', () => {
+  assert.deepEqual(loadCache('/tmp/definitely-not-here-12345.json'), []);
+});
+
+test('loadCache 讀到壞 JSON 時回傳空陣列', () => {
+  const p = '/tmp/bad-cache-test.json';
+  fs.writeFileSync(p, '{ not json');
+  assert.deepEqual(loadCache(p), []);
+  fs.unlinkSync(p);
 });
