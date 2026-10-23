@@ -1,31 +1,20 @@
-# 備援語音：平台 TTS 掛掉時怎麼辦
+# 備援語音：主 TTS 後端掛掉時怎麼辦
 
-> 2026-10-22 實測。這是平台音訊**生成**管線全面故障時的應對手冊。
+> 這份文件講的是**技術**（怎麼用另一個語音後端頂上、怎麼驗收、怎麼並存）。
+> 「平台掛掉長什麼樣、怎麼判斷、怎麼繞」是平台專屬的，
+> 記在 **`references/platform-pitfalls.md`**。
+>
+> 備援語音換任何一家都行 —— 端點是純 HTTPS GET、不用 key、不用 websocket。
+> 換一家只要改端點與參數，音檔格式與命名規則照下面那套走。
 
-## 故障的樣貌
+## 何時需要備援
 
-平台的音訊生成後端可能整個壞掉，症狀是：
+主 TTS 後端**整個生成管線**故障時：換 voice、換 emotion、換文字長度、換語言
+全都一樣失敗，與輸入無關，且沒有任何客戶端繞法。
 
-```
-batch_text_to_audio  → {"code":0,"message":"all 1 failed:
-                         audio post-processing failed: an internal server-side error occurred"}
-synthesize_speech    → {"code":500,"message":"audio post-processing failed: ..."}
-batch_text_to_music  → {"code":0,"message":"all 1 failed:
-                         music post-processing failed: an internal server-side error occurred"}
-listen_audio (STT)   → ✅ 正常
-connector tools       → ✅ 200
-```
+**怎麼判斷是不是這種故障** → 見 `references/platform-pitfalls.md` 第 2 節。
 
-**兩個關鍵判讀**：
-
-1. **`connector tools` 回 200 不代表 TTS 能用。** 只探測工具列表會誤判成「可用」，
-   然後每次輪詢都跑一輪昂貴合成才失敗。合成前一定要先打一發最簡單的單句 TTS
-   做健康檢查。
-2. **語音和音樂同時壞 = 整個生成管線壞**，不是語音模型壞。
-   STT 正常是因為 STT 只回文字，不產出資產、不經過後處理。
-
-換 voice / 換 emotion / 換文字長度 / 換語言**全都一樣失敗** → 與輸入無關，
-是伺服器端問題，**沒有任何客戶端繞法**（OAuth bearer、換 region、換 base URL 都無效）。
+（`scripts/google-tts.mjs` 是一個可直接用的實作，不是唯一選擇。）
 
 ## 備援：Google Translate TTS
 

@@ -2,6 +2,11 @@
 /**
  * probe-seg-platform.mjs — 對平台版（MiniMax 語音）音檔做段級窄視窗複驗。
  *
+ * ⚠️ 這支是**平台專屬**工具：它假設 jobdir 裡的音檔檔名是 node_id
+ *    （不是 part_NNN.mp3），要用 items.json 的 node_id 欄位做對照。
+ *    換 TTS 後端時請改用 scripts/probe-seg.mjs（假設 part_NNN.mp3）。
+ *    平台層的細節記在 references/platform-pitfalls.md。
+ *
  * 平台版的 jobdir 裡每段一個 mp3，但**檔名是 node_id**（不是 part_NNN.mp3），
  * 需要靠 items.json 的 node_id 欄位做「段號 → 檔案」的對照。
  *

@@ -47,7 +47,9 @@ been tested (only Mandarin, Simplified and Traditional, is verified).
 ## Verification: how the STT pass actually behaves
 
 Measured on real output, not assumed. These cost real debugging time — treat them
-as facts, not guesses.
+as facts, not guesses. (The observations were taken on the ASR backend in use; the
+*lessons* — accept both numeral forms, don't trust a single read — hold for any
+ASR. Backend-specific failure signatures live in `references/platform-pitfalls.md`.)
 
 **Number format is bidirectional.** The STT does not normalise numbers one way:
 
@@ -452,31 +454,35 @@ from #11 onward. The part names are padded to three digits, and the sort is nume
 - **TTS or STT unavailable / network failing** — say so plainly and point at the script.
   Do not substitute a web TTS site and hand the user a copy-paste chore. A 0-char STT pass
   means "unverified", not "verified" — report it that way.
-- **HTTP 402 "the user's plan balance has run out"** — this is a BILLING limit on the
-  user's own plan, not a rate limit and not a transient fault. Retrying does not help.
-  Stop calling the TTS/STT connectors, download whatever parts were already synthesized
-  (asset node ids expire — pull them to the workspace), and tell the user to top up.
-  Everything else can still be finished offline: write the script, run `audit-numbers.mjs`,
-  prepare the segment and key files, and leave a resume command in the playlist.
-- **The platform's audio GENERATION pipeline is down** — symptoms: `batch_text_to_audio`
-  and `synthesize_speech` both return `audio post-processing failed: an internal
-  server-side error`, and `batch_text_to_music` returns the same with `music
-  post-processing failed`. STT (`listen_audio`) stays healthy and `connector tools` still
-  returns 200. That combination means the whole generation+post-processing path is dead
-  server-side — there is **no client-side workaround** (bearer token, other region, other
-  base URL all fail the same way). Do not confuse it with the sandbox-egress signature
-  fault, which looks different and does have workarounds.
-  - **Never gate on `connector tools` alone.** It returns 200 while TTS is dead, so a
-    poller that only probes the tool list will launch a full synthesis every cycle and
-    fail. Send one minimal single-sentence TTS request first; only start if it succeeds.
-  - **Keep the platform poller running** — the outage does clear on its own (one measured
-    outage lasted 30 h 42 m). Meanwhile use the fallback voice below so the episode is
-    not blocked.
+- **The TTS backend's audio GENERATION pipeline is down** — every voice, emotion, text
+  length and language fails identically, so it is a server-side fault with **no
+  client-side workaround** (bearer token, other region, other base URL all fail the
+  same way). Do not confuse it with a signature fault, which looks different and does
+  have workarounds.
+  - **Never gate on a tool-list probe alone.** It can return 200 while TTS is dead, so a
+    poller that only lists tools will launch a full synthesis every cycle and fail.
+    Send one minimal single-sentence TTS request first, in the *production* request
+    format; only start if it succeeds.
+  - **Keep the poller running** — outages do clear on their own (one measured outage
+    lasted 30 h 42 m, and later outages flickered on and off). Meanwhile use the
+    fallback voice below so the episode is not blocked.
+  - **A billing limit is not a rate limit.** "the user's plan balance has run out"
+    cannot be retried away: stop calling the connectors, download whatever parts were
+    already synthesized (asset node ids expire — pull them to the workspace), and tell
+    the user to top up. Everything else still finishes offline: write the script, run
+    `audit-numbers.mjs`, prepare the segment and key files, and leave a resume command
+    in the playlist.
 
-### Fallback voice when the platform TTS is down
+> **平台專屬的故障指紋、連線模式、STT 的兩個坑、pod 回收與續跑快存的細節**，
+> 全部記在 **`references/platform-pitfalls.md`**。
+> 那份文件只適用於當前 TTS 供應商；本 skill 的改寫／分段／鍵覆蓋／合併／驗收
+> 這一層不綁任何供應商，要換後端只需要換 `narrate.mjs` 裡呼叫 TTS／STT 的那幾個函式。
+
+
+### Fallback voice when the TTS backend is down
 
 `scripts/google-tts.mjs` synthesises through Google Translate's TTS endpoint
-(plain HTTPS GET, no websocket, no key). It is noticeably slower than the platform
+(plain HTTPS GET, no websocket, no key). It is noticeably slower than the default
 voice (~27% longer for the same script) and uses a **different voice**, so:
 
 - write the output with a `.google` suffix so both versions coexist and the user picks;
@@ -508,7 +514,8 @@ ask which one rather than picking.
 `narrate.mjs` 现在会在任务目录里写 `.lock`（PID）。如果该 PID 还活着，新进程会**直接退出并报退出码 5**，
 不会开始任何 API 调用。看到这个提示就换个 `--out` 文件名，或者等那个进程结束。
 
-> 实测教训：平台的自动化评测 agent 会在同一个 `/workspace` 里用同一套技能跑同一个任务。
-> 它的一次 `--verify-only` 覆盖了我已完成的 `transcript.txt`，
+> 实测教训：同一个 `/workspace` 里用同一套技能跑同一个任务时（另一个 agent、
+> 另一个终端、或者你忘了上一条还在跑），会撞上这个坑。
+> 一次 `--verify-only` 覆盖了我已完成的 `transcript.txt`，
 > 日志里出现两套互相矛盾的校验结果（25/25 与 20/25 交错）。
 > 音频文件本身没坏（重验确认），但如果当时没察觉就会误判成「音频损坏」。

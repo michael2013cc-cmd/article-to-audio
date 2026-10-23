@@ -159,6 +159,11 @@ STT 会把中文数字规范化回阿拉伯数字。所以 `--verify` 的键**�
 
 > 换句话说：**原料是供应商的，菜谱不是。** 别把菜谱的功劳算给原料 —— 那样会高估护城河。
 
+**平台专属的坑全部隔离在一份文件里**：`references/platform-pitfalls.md`
+（故障指纹对照表、连接模式、STT 的内容过滤器与短视窗、pod 回收、续跑缓存的合并语义）。
+换成别家 TTS 时，那份文件里的大部分内容会自动失效；改写／分段／键覆盖／合并／验收
+这一层不绑任何供应商。
+
 ### 9. 没有单元测试
 
 质量证据来自一次真实干跑 + 一次真实生产调用。**够用，但不成体系。** 上游 API 若改了 `output_file` 字段名，那层防御会静默失效（脚本里有全量比对断言兜底，但没有测试锁住这个断言）。
@@ -244,22 +249,32 @@ article-to-audio/
 ├── SKILL.md                          # 执行规约：流程 / 输出契约 / 失败处理
 ├── references/
 │   ├── text-conversion.md            # 转换规则表（含 before/after 实例）
-│   └── voices.md                     # 音色与语速：场景对照 + 默认值
+│   ├── voices.md                     # 音色与语速：场景对照 + 默认值
+│   ├── fallback-voice.md             # 主 TTS 挂掉时的备援语音：端点 / 限制 / 验收坑
+│   └── platform-pitfalls.md          # ⚠️ 平台专属：故障指纹 / 连接模式 / STT 的坑
 ├── scripts/
 │   ├── narrate.mjs                   # 确定性流水线：合成 → 校验 → 合并
 │   ├── preflight-all.mjs             # 稿件层预检：假键 / 损坏字符 / 超长段 / 段尾裸数字 / md↔segs
 │   ├── pick-keys.mjs                 # 校验键生成：自动候选 + 人工指定
 │   ├── extract-keys.mjs  keys.mjs    # 键的抽取与中阿数字归一
+│   ├── match.mjs                     # 键的比对（含千分位 / 中文数字的双向归一）
 │   ├── md2segs.mjs    md.mjs         # 稿 → 段（切点必须落在句号上）/ Markdown 剥离
 │   ├── audit-numbers.mjs             # 源文 ↔ 稿子的数字对账
 │   ├── audit-segments.mjs            # 合成后的逐段时长与字秒比
+│   ├── audio-sweep.mjs               # 音档层扫描：时长离群 / 音量 / 削波
+│   ├── rt-check.mjs                  # TTS 循环健全性检查（零 API 成本）
 │   ├── probe-audio.mjs               # 探针：定位是音频坏了还是转写坏了
+│   ├── probe-seg.mjs                 # 段级窄视窗复验（part_NNN.mp3 版）
+│   ├── probe-seg-platform.mjs        # ⚠️ 平台专属：段级复验（node_id 命名版）
 │   ├── merge-episode.mjs             # 整篇合并（等参数二进制拼接，零重编码）
 │   ├── merge-partial.mjs             # 合并未完成的残段
 │   ├── recover-parts.mjs             # 断点续跑
+│   ├── cache.mjs                     # 续跑缓存：只合并、永不覆盖
 │   ├── migrate-items-cache.mjs       # 旧版 items.json 迁移
 │   ├── locate-part.mjs               # 段号 → 音檔位置
+│   ├── google-tts.mjs                # 备援语音：Google Translate TTS
 │   └── test-keys.mjs                 # 键匹配规则的单元测试
+├── tests/                            # node:test 测试套件
 └── examples/
     └── segments.example.json         # 分段 JSON 样例
 ```
