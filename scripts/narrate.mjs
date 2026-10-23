@@ -391,6 +391,18 @@ async function sttOnce(file, attempt = 1) {
     const args = { audio_info: { url: temp_url, mime_type: 'audio/mpeg', prompt: '逐字转写，保留繁體中文' } };
     const d = JSON.parse(run('mcode-tools', ['connector', 'call', STT, '--args', JSON.stringify(args)], { timeout: 240_000 }));
     const t = d.transcription || '';
+    // 2026-10-23：帳務額度用盡時，STT 會回 200 + **空的** transcription，
+    // 真正的錯誤訊息在 `message` 欄位（「the user's plan balance has run out」）。
+    // 這跟「內容濾器」長得完全不一樣，但兩者都是「轉寫空」，
+    // 不分開處理的話會 (a) 白白重試四次、(b) 再切三個子片重試、
+    // (c) 誤報成「content filter blocked」——2026-10-23 實際上因此
+    // 誤判了 ep17c 整段，浪費了十幾次呼叫還查錯了方向。
+    // 帳務上限不能重試：立刻停下來說清楚。
+    const msg = String(d.message || '');
+    if (/plan balance has run out|billing limit|insufficient balance|quota exceeded/i.test(msg)) {
+      console.error(`  !! 帳務額度用盡（${msg.slice(0, 90)}）—— 不能重試，請讓使用者充值`);
+      return '';
+    }
     if (isFilterError(t)) {
       if (attempt < 3) {
         console.log(`    (content filter, retry ${attempt}/2 on ${path.basename(file)})`);
@@ -443,7 +455,7 @@ async function transcribeFull(out, jobdir) {
         run('ffmpeg', ['-y', '-v', 'error', '-ss', String(i * STT_MAX + k * SUB), '-t', String(SUB),
           '-i', out, '-c', 'copy', subFile]);
         const st = await sttOnce(subFile);
-        if (!st.length) console.log(`    (sub-piece ${i + 1}.${k + 1} also blocked)`);
+        if (!st.length) console.log(`    (sub-piece ${i + 1}.${k + 1} also empty)`);
         sub += st;
       }
       if (sub.length) {
