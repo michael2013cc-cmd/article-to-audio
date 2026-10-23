@@ -268,3 +268,26 @@ test('loadCache 讀到壞 JSON 時回傳空陣列', () => {
   assert.deepEqual(loadCache(p), []);
   fs.unlinkSync(p);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-23：兩個正規化／比對缺口（ep18 C4 實測）
+// ---------------------------------------------------------------------------
+
+test('「千瓦」的千是單位，不是千倍數', () => {
+  // 2026-10-23 實測 bug：把「一百六十七千瓦」正規化成「7160瓦」——
+  // 「千」被當成乘數套在最後一組數字上，數值差了 43 倍。
+  assert.equal(normalizeScript(seg('一百六十七千瓦')).includes('167千瓦'), true);
+  assert.equal(normalizeScript(seg('一百六十七千瓦')).includes('7160'), false);
+  assert.equal(normalizeScript(seg('三十五千瓦时')).includes('35千瓦时'), true);
+  assert.equal(normalizeScript(seg('一百二十八千瓦时')).includes('128千瓦时'), true);
+  assert.equal(normalizeScript(seg('一百千瓦')).includes('100千瓦'), true);
+});
+
+test('「千瓦」修正不影響其他千/百的用法', () => {
+  // 四千七百瓦 = 4700 瓦（這裡沒有「千瓦」，千是真的千倍數）
+  assert.equal(normalizeScript(seg('四千七百瓦')).includes('4700瓦'), true);
+  // 兩千千瓦 = 2000 千瓦
+  assert.equal(normalizeScript(seg('两千千瓦')).includes('2000千瓦'), true);
+  // 百萬美元 = 1000000 美元
+  assert.equal(normalizeScript(seg('百萬美元')).includes('1000000'), true);
+});

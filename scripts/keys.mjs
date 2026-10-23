@@ -336,6 +336,11 @@ export function scanChineseRuns(chars) {
     }
     while (j < chars.length) {
       const ch = chars[j];
+      // 「千瓦」/「千瓦时」: the 千 belongs to the UNIT (kilowatt), it is not a
+      // thousands multiplier. "一百六十七千瓦" is 167 kW — absorbing the 千
+      // produced "7160瓦" (wrong by a factor of ~10). Breaking here also
+      // keeps "一千瓦" at 1 kW = 1000 W, which is the same value either way.
+      if ((ch === '千' || ch === '仟') && chars[j + 1] === '瓦') break;
       if (CN_NUM_CHARS.has(ch) || isDigit(ch)) { hasDigit = true; j++; continue; }
       if (CN_POINT.includes(ch)) {
         if (sawPoint) break;
