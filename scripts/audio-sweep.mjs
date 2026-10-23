@@ -19,9 +19,16 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const argv = process.argv.slice(2);
-const dirs = argv.length ? argv : fs.readdirSync('.tts-narration')
+const all = argv.length ? argv : fs.readdirSync('.tts-narration')
   .map(d => path.join('.tts-narration', d))
   .filter(d => fs.statSync(d).isDirectory());
+// The .tts-narration dir also holds scratch dirs from other experiments
+// (talkback_ecosystem_study, eval_ops_q3, t2..tC, ...). They are NOT part of
+// the 18-episode series, and one of them raised a false clipping flag, so
+// series mode keeps only the episode jobdirs.
+const SERIES = /^(ep\d+[a-z]?|C4)-/;
+const dirs = argv.length ? all : all.filter(d => SERIES.test(path.basename(d)));
+const skipped = all.filter(d => !SERIES.test(path.basename(d)));
 
 let totalBad = 0;
 for (const dir of dirs) {
@@ -80,5 +87,6 @@ for (const dir of dirs) {
     totalBad += bad.length;
   }
 }
+if (skipped.length) console.log(`\n略過 ${skipped.length} 個非系列目錄：${skipped.map(d => path.basename(d)).join(', ')}`);
 console.log(totalBad ? `\n共 ${totalBad} 段需要處理。` : '\n全部音檔層檢查通過 ✅');
 process.exit(totalBad ? 1 : 0);
