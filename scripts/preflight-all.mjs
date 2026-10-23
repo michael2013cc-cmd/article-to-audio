@@ -98,10 +98,16 @@ for (const spec of pairs) {
   }
 
   // 假鍵偵測：自動產生的鍵可能是「別人產品型號內部的數字」——
-  // MI355X 的 355、gfx950 的 950、Llama-3.3-70B 的 3.3、Qwen3.5-397B-A17B 的 397/17。
+  // MI355X 的 355、gfx950 的 950、Llama-3.3-70B 的 3.3、Qwen3.5-397B-A17B 的 397/17、
+  // GLM-5.2 的 5.2、Kimi-K2.6 的 2.6。
   // 這些數字確實出現在稿子裡，但不是數據，TTS 念出來時常變形 → 回聽必然報 miss。
-  // 判斷法：把鍵當 regex 回代稿子，若**所有**出現位置的左右鄰居都是英數/標點（落在
-  // token 內部），就是疑似假鍵，提示人工確認（不直接判死，因為偶爾真數字也會挨著英文）。
+  // 判斷法：把鍵當 regex 回代稿子，若**所有**出現位置的前一個字元都是英數/連字號/點
+  // （數字接在某個 token 後面，屬於那個 token 的一部分），就是疑似假鍵。
+  //
+  // 2026-10-23 修正：原本要求「前後都要是 tokenish」，結果漏掉
+  // "GLM-5.2、MiniMax" —— 數字後面跟的是全形頓號「、」，不在 tokenish 集合裡，
+  // 於是整個判定被放行。改成只看前一個字元：數字接在英數/連字號/點後面
+  // 就是 token 內部，後面是什麼都不影響。
   const suspect = [];
   for (const k of keys) {
     // 鍵檔可能是「字串陣列」或「物件陣列 {key, alts, ...}」——
@@ -112,11 +118,20 @@ for (const spec of pairs) {
     const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
     const hits = [];
     let m;
-    while ((m = re.exec(segs.join('\n'))) !== null) {
-      const before = segs.join('\n').slice(Math.max(0, m.index - 1), m.index);
-      const after = segs.join('\n').slice(m.index + n.length, m.index + n.length + 1);
-      const tokenish = (c) => c === '' || /[A-Za-z0-9.\-_]/.test(c);
-      hits.push(tokenish(before) && tokenish(after));
+    const whole = segs.join('\n');
+    while ((m = re.exec(whole)) !== null) {
+      const before = whole.slice(Math.max(0, m.index - 1), m.index);
+      const before2 = whole.slice(Math.max(0, m.index - 2), m.index - 1);
+      const after = whole.slice(m.index + n.length, m.index + n.length + 1);
+      // 數字落在某個 token 內部的三種樣態：
+      //   1. 前一個字元是英文字母         → MI355X / gfx950 / HBM4
+      //   2. 前一個字元是連字號或點，而那個前面是英數 → GLM-5.2 / Kimi-K2.6 / Llama-3.3
+      //   3. 前一個字元是連字號，且數字後面接英文字母 → Llama-3.3-70B 的 70
+      // 純數字接在數字後面不算（3.5 可能是 13.5 的一部分，那是真的）。
+      const insideToken = /[A-Za-z]/.test(before)
+        || (/[-.]/.test(before) && /[A-Za-z0-9]/.test(before2))
+        || (before === '-' && /[A-Za-z]/.test(after));
+      hits.push(insideToken);
       if (hits.length >= 6) break;
     }
     if (hits.length && hits.every(Boolean)) suspect.push(label);
