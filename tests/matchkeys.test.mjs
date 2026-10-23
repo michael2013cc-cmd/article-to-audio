@@ -28,3 +28,23 @@ test('matchKeys 支援純字串鍵檔', () => {
   assert.equal(matchKeys('共 12,288 個加速器', ['12288']).length, 0);
   assert.equal(matchKeys('共 96 個加速器', ['12288']).length, 1);
 });
+
+test('matchKeys 命中 STT 的三種千分位寫法', () => {
+  // 2026-10-23 實測：STT 寫千分位有三种樣子，鍵都沒有任何分隔符。
+  //   ep18  「12,288」  半形逗號
+  //   ep16b 「1，180」  全形逗號
+  //   ep16b 「一 180」  中文數字 + 空格（normalizeScript 後變成「1 180」）
+  for (const t of ['對匯總表 12,288 個加速器', '對匯總表 12，288 個加速器',
+                   '對匯總表十二 288 個加速器', '對匯總表 12288 個加速器']) {
+    assert.equal(matchKeys(t, [{ key: '12288', alts: [] }]).length, 0, t);
+  }
+  for (const t of ['對匯總表 1,180 EFLOPS', '對匯總表 1，180 EFLOPS',
+                   '對匯總表一 180 EFLOPS', '對匯總表 1180 EFLOPS']) {
+    assert.equal(matchKeys(t, [{ key: '1,180', alts: [] }]).length, 0, t);
+    assert.equal(matchKeys(t, [{ key: '1180', alts: [] }]).length, 0, t);
+  }
+});
+
+test('matchKeys 仍然抓得出真的缺漏', () => {
+  assert.equal(matchKeys('對匯總表一，085 EFLOPS', [{ key: '1,180', alts: [] }]).length, 1);
+});
